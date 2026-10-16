@@ -73,29 +73,23 @@ async def test_send_email_uses_smtp(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_send_email_propagates_smtp_failure(monkeypatch):
-    smtp_send = AsyncMock(side_effect=OSError("SMTP unavailable"))
-    monkeypatch.setattr(email_service.aiosmtplib, "send", smtp_send)
+    async def fail_smtp(*args, **kwargs):
+        raise OSError("SMTP unavailable")
+
     monkeypatch.setattr(
-        email_service.settings, "smtp_from_email", "jobs@example.com"
+        email_service.aiosmtplib,
+        "send",
+        fail_smtp,
     )
     monkeypatch.setattr(
-        email_service.settings, "smtp_from_name", "JobPilot"
+        email_service.settings,
+        "smtp_from_email",
+        "jobs@example.com",
     )
     monkeypatch.setattr(
-        email_service.settings, "smtp_host", "smtp.example.com"
-    )
-    monkeypatch.setattr(email_service.settings, "smtp_port", 587)
-    monkeypatch.setattr(
-        email_service.settings, "smtp_username", None
-    )
-    monkeypatch.setattr(
-        email_service.settings, "smtp_password", None
-    )
-    monkeypatch.setattr(
-        email_service.settings, "smtp_use_tls", False
-    )
-    monkeypatch.setattr(
-        email_service.settings, "smtp_start_tls", True
+        email_service.settings,
+        "smtp_host",
+        "smtp.example.com",
     )
 
     with pytest.raises(OSError, match="SMTP unavailable"):
