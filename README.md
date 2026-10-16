@@ -1,4 +1,4 @@
-# 🚀 Job Pilot
+# 🚀 Job Pilot (Currently Building)
 
 <p align="center">
   <b>Stop spending hours manually searching and applying. Let Job Pilot navigate your career search.</b>
