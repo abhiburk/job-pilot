@@ -521,3 +521,91 @@ def test_list_jobs_rejects_min_score_out_of_range(client, db):
     )
 
     assert response.status_code == 422
+
+
+# --------------------------------------------------
+# Application Dashboard Summary API
+# --------------------------------------------------
+
+def test_application_summary_returns_status_and_follow_up_counts(client, db):
+    candidate = make_candidate()
+    db.get.return_value = candidate
+
+    status_result = MagicMock()
+    status_result.all.return_value = [
+        ("saved", 3),
+        ("preparing", 2),
+        ("applied", 4),
+        ("interviewing", 1),
+        ("offer", 1),
+    ]
+    db.execute = AsyncMock(return_value=status_result)
+    db.scalar = AsyncMock(side_effect=[2, 3, 4])
+
+    response = client.get(
+        f"/api/applications/candidate/{candidate.id}/summary"
+    )
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert body["candidate_id"] == str(candidate.id)
+    assert body["total"] == 11
+
+    assert body["by_status"] == {
+        "saved": 3,
+        "preparing": 2,
+        "applied": 4,
+        "interviewing": 1,
+        "rejected": 0,
+        "offer": 1,
+        "withdrawn": 0,
+    }
+
+    assert body["follow_ups"] == {
+        "overdue": 2,
+        "due_today": 3,
+        "upcoming": 4,
+    }
+
+
+def test_application_summary_returns_zero_counts(client, db):
+    candidate = make_candidate()
+    db.get.return_value = candidate
+
+    status_result = MagicMock()
+    status_result.all.return_value = []
+    db.execute = AsyncMock(return_value=status_result)
+    db.scalar = AsyncMock(return_value=None)
+
+    response = client.get(
+        f"/api/applications/candidate/{candidate.id}/summary"
+    )
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert body["total"] == 0
+    assert all(
+        count == 0 for count in body["by_status"].values()
+    )
+    assert body["follow_ups"] == {
+        "overdue": 0,
+        "due_today": 0,
+        "upcoming": 0,
+    }
+
+
+def test_application_summary_returns_404_for_missing_candidate(client, db):
+    db.get.return_value = None
+
+    response = client.get(
+        f"/api/applications/candidate/{uuid4()}/summary"
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Candidate not found"
+
+    db.execute.assert_not_awaited()

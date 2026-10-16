@@ -1,9 +1,7 @@
 
-from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,6 +20,8 @@ from backend.app.services.ai_provider import (
     MODEL,
     generate_text,
 )
+from datetime import datetime, time, timedelta, timezone
+from sqlalchemy import func, select
 
 router = APIRouter(prefix="/api/applications", tags=["Applications"])
 
@@ -130,6 +130,96 @@ async def list_applications(
 
     return items
 
+
+@router.get("/candidate/{candidate_id}/summary")
+async def get_application_summary(
+    candidate_id: UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    candidate = await db.get(Candidate, candidate_id)
+
+    if candidate is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Candidate not found",
+        )
+
+    now = datetime.now(timezone.utc)
+    today_start = datetime.combine(
+        now.date(),
+        time.min,
+        tzinfo=timezone.utc,
+    )
+    tomorrow_start = today_start + timedelta(days=1)
+
+    active_statuses = (
+        "saved",
+        "preparing",
+        "applied",
+        "interviewing",
+    )
+
+    # Count applications grouped by status.
+    status_query = (
+        select(Application.status, func.count(Application.id))
+        .where(Application.candidate_id == candidate_id)
+        .group_by(Application.status)
+    )
+
+    status_result = await db.execute(status_query)
+
+    counts = {
+        "saved": 0,
+        "preparing": 0,
+        "applied": 0,
+        "interviewing": 0,
+        "rejected": 0,
+        "offer": 0,
+        "withdrawn": 0,
+    }
+
+    for application_status, count in status_result.all():
+        if application_status in counts:
+            counts[application_status] = count
+
+    # Count follow-ups that are overdue.
+    overdue_count = await db.scalar(
+        select(func.count(Application.id)).where(
+            Application.candidate_id == candidate_id,
+            Application.follow_up_at < now,
+            Application.status.in_(active_statuses),
+        )
+    )
+
+    # Count follow-ups due today.
+    due_today_count = await db.scalar(
+        select(func.count(Application.id)).where(
+            Application.candidate_id == candidate_id,
+            Application.follow_up_at >= today_start,
+            Application.follow_up_at < tomorrow_start,
+            Application.status.in_(active_statuses),
+        )
+    )
+
+    # Count follow-ups scheduled after today.
+    upcoming_count = await db.scalar(
+        select(func.count(Application.id)).where(
+            Application.candidate_id == candidate_id,
+            Application.follow_up_at >= tomorrow_start,
+            Application.status.in_(active_statuses),
+        )
+    )
+
+    return {
+        "candidate_id": str(candidate_id),
+        "total": sum(counts.values()),
+        "by_status": counts,
+        "follow_ups": {
+            "overdue": overdue_count or 0,
+            "due_today": due_today_count or 0,
+            "upcoming": upcoming_count or 0,
+        },
+    }
 
 @router.patch("/{application_id}", response_model=ApplicationRead)
 async def update_application(
