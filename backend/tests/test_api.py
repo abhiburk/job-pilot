@@ -281,3 +281,243 @@ def test_get_matches_rejects_invalid_limit(client, db):
 
     assert response.status_code == 422
     db.get.assert_not_awaited()
+
+
+# --------------------------------------------------
+# Job Dashboard API
+# --------------------------------------------------
+
+from collections import namedtuple
+
+
+DashboardRow = namedtuple(
+    "DashboardRow",
+    [
+        "job",
+        "company_name",
+        "match_score",
+        "skills_score",
+        "experience_score",
+        "preference_score",
+        "role_relevance_score",
+        "salary_score",
+        "strengths",
+        "gaps",
+        "explanation",
+    ],
+)
+
+
+def make_dashboard_job(**overrides):
+    """Build a lightweight job object for dashboard response tests."""
+    data = {
+        "id": uuid4(),
+        "title": "Senior Laravel Developer",
+        "company_id": uuid4(),
+        "description": "Build APIs with Laravel and PostgreSQL",
+        "location": "Remote, India",
+        "remote_type": "remote",
+        "employment_type": "full-time",
+        "experience_level": "senior",
+        "salary_min": Decimal("1500000"),
+        "salary_max": Decimal("2500000"),
+        "salary_currency": "INR",
+        "job_url": "https://example.com/jobs/laravel",
+        "source": "test",
+        "posted_at": datetime.now(timezone.utc),
+        "discovered_at": datetime.now(timezone.utc),
+        "is_active": True,
+    }
+    data.update(overrides)
+    return SimpleNamespace(**data)
+
+
+def make_dashboard_row(job=None, **overrides):
+    data = {
+        "job": job or make_dashboard_job(),
+        "company_name": "Example Technologies",
+        "match_score": Decimal("85.50"),
+        "skills_score": Decimal("90.00"),
+        "experience_score": Decimal("80.00"),
+        "preference_score": Decimal("75.00"),
+        "role_relevance_score": Decimal("88.00"),
+        "salary_score": Decimal("70.00"),
+        "strengths": ["Matching skill: Laravel"],
+        "gaps": ["Missing skill: Kubernetes"],
+        "explanation": "Strong match for the role.",
+    }
+    data.update(overrides)
+    return DashboardRow(**data)
+
+
+
+def setup_dashboard_result(db, rows=None, total=1):
+    """Configure the mocked count and paginated query results."""
+    db.scalar = AsyncMock(return_value=total)
+
+    result = MagicMock()
+    result.all.return_value = rows or []
+    db.execute = AsyncMock(return_value=result)
+
+
+
+def test_list_jobs_returns_paginated_results(client, db):
+    job = make_dashboard_job()
+    setup_dashboard_result(
+        db,
+        rows=[make_dashboard_row(job)],
+        total=1,
+    )
+
+    response = client.get("/api/jobs")
+
+    assert response.status_code == 200
+    body = response.json()
+
+    assert body["pagination"]["total"] == 1
+    assert body["pagination"]["limit"] == 20
+    assert body["pagination"]["offset"] == 0
+    assert body["pagination"]["has_more"] is False
+
+    assert len(body["items"]) == 1
+    assert body["items"][0]["id"] == str(job.id)
+    assert body["items"][0]["title"] == job.title
+    assert body["items"][0]["company_name"] == "Example Technologies"
+    assert body["items"][0]["match_score"] == 85.5
+    assert body["items"][0]["match_breakdown"]["skills"] == 90.0
+
+
+def test_list_jobs_returns_empty_results(client, db):
+    setup_dashboard_result(db, rows=[], total=0)
+
+    response = client.get("/api/jobs")
+
+    assert response.status_code == 200
+    assert response.json()["items"] == []
+    assert response.json()["pagination"]["total"] == 0
+    assert response.json()["pagination"]["has_more"] is False
+
+
+def test_list_jobs_supports_search_and_filters(client, db):
+    setup_dashboard_result(db, rows=[], total=0)
+
+    response = client.get(
+        "/api/jobs",
+        params={
+            "q": "Laravel",
+            "location": "India",
+            "remote_type": "remote",
+            "experience_level": "senior",
+            "employment_type": "full-time",
+        },
+    )
+
+    assert response.status_code == 200
+    filters = response.json()["filters"]
+
+    assert filters["q"] == "Laravel"
+    assert filters["location"] == "India"
+    assert filters["remote_type"] == "remote"
+    assert filters["experience_level"] == "senior"
+    assert filters["employment_type"] == "full-time"
+
+
+def test_list_jobs_supports_pagination(client, db):
+    first_job = make_dashboard_job()
+    second_job = make_dashboard_job(title="Backend Engineer")
+
+    setup_dashboard_result(
+        db,
+        rows=[
+            make_dashboard_row(first_job),
+            make_dashboard_row(second_job),
+        ],
+        total=5,
+    )
+
+    response = client.get(
+        "/api/jobs",
+        params={"limit": 2, "offset": 2},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+
+    assert body["pagination"]["total"] == 5
+    assert body["pagination"]["limit"] == 2
+    assert body["pagination"]["offset"] == 2
+    assert body["pagination"]["has_more"] is True
+    assert len(body["items"]) == 2
+
+
+def test_list_jobs_supports_sort_options(client, db):
+    setup_dashboard_result(db, rows=[], total=0)
+
+    for sort_by in ("newest", "match_score", "salary_high", "salary_low"):
+        response = client.get(
+            "/api/jobs",
+            params={"sort_by": sort_by},
+        )
+        assert response.status_code == 200, sort_by
+
+
+def test_list_jobs_rejects_invalid_sort(client, db):
+    response = client.get(
+        "/api/jobs",
+        params={"sort_by": "random"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_list_jobs_rejects_invalid_remote_type(client, db):
+    response = client.get(
+        "/api/jobs",
+        params={"remote_type": "anywhere"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_list_jobs_rejects_invalid_pagination(client, db):
+    response = client.get(
+        "/api/jobs",
+        params={"limit": 101},
+    )
+
+    assert response.status_code == 422
+
+
+def test_min_score_requires_candidate_id(client, db):
+    response = client.get(
+        "/api/jobs",
+        params={"min_score": 70},
+    )
+
+    assert response.status_code == 422
+    assert "candidate_id is required" in response.json()["detail"]
+
+
+def test_list_jobs_returns_404_for_unknown_candidate(client, db):
+    candidate_id = uuid4()
+    db.get.return_value = None
+
+    response = client.get(
+        "/api/jobs",
+        params={"candidate_id": str(candidate_id)},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Candidate not found"
+
+
+def test_list_jobs_rejects_min_score_out_of_range(client, db):
+    response = client.get(
+        "/api/jobs",
+        params={
+            "candidate_id": str(uuid4()),
+            "min_score": 101,
+        },
+    )
+
+    assert response.status_code == 422
