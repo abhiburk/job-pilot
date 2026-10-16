@@ -446,3 +446,33 @@ class JobFeedback(Base):
     is_relevant: Mapped[bool | None] = mapped_column(Boolean)
     reason: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = created_at_column()
+
+class JobDigestDelivery(Base):
+    __tablename__ = "job_digest_deliveries"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "candidate_id",
+            "job_id",
+            name="uq_job_digest_candidate_job",
+        ),
+    )
+
+    # Fixed: Added Mapped[int] type annotation
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    
+    candidate_id: Mapped[int] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    job_id: Mapped[int] = mapped_column(
+        ForeignKey("jobs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    sent_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
