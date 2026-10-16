@@ -1,4 +1,4 @@
-# 🚀 Job Pilot
+# 🚀 Job Pilot (Currently Building)
 
 <p align="center">
   <b>Stop spending hours manually searching and applying. Let Job Pilot navigate your career search.</b>
@@ -35,19 +35,4 @@
 *   **Data Handling:** Pandas, SQLite / SQLAlchemy
 *   **APIs:** Requests, platform-specific APIs
 
----
-
-## 🚀 Getting Started
-
-### Prerequisites
-
-*   Python 3.10 or higher
-*   pip / poetry
-*   (Optional) Browser drivers if using Selenium/Playwright
-
-### Installation
-
-1. Clone the repository:
-   ```bash
-   git clone [https://github.com/yourusername/job-pilot.git](https://github.com/yourusername/job-pilot.git)
-   cd job-pilot
+--
