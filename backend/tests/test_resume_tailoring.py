@@ -1,3 +1,5 @@
+
+import json
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -5,12 +7,27 @@ import pytest
 from sqlalchemy import select
 
 from backend.app.models import (
-    Application,
     ApplicationDocument,
     Candidate,
     Job,
 )
 from backend.app.services import resume_tailoring as service
+
+
+def make_tailoring_response(
+    tailored_resume="Test Candidate\nPROFESSIONAL SUMMARY\nBackend developer experienced with Laravel and PostgreSQL.",
+):
+    return json.dumps(
+        {
+            "tailored_resume": tailored_resume,
+            "changes_summary": [
+                "Emphasized existing Laravel backend experience."
+            ],
+            "warnings": [
+                "The supplied resume does not establish Kubernetes experience."
+            ],
+        }
+    )
 
 
 async def create_resume_test_data(db):
@@ -55,13 +72,7 @@ async def test_tailor_resume_creates_unapproved_document(
     monkeypatch.setattr(
         service,
         "generate_text",
-        AsyncMock(
-            return_value=(
-                "Test Candidate\n"
-                "PROFESSIONAL SUMMARY\n"
-                "Backend developer experienced with Laravel and PostgreSQL."
-            )
-        ),
+        AsyncMock(return_value=make_tailoring_response()),
     )
 
     result = await service.tailor_resume_for_job(
@@ -69,6 +80,7 @@ async def test_tailor_resume_creates_unapproved_document(
     )
 
     document = result["document"]
+    metadata = document["generation_metadata"]
 
     assert document["document_type"] == "tailored_resume"
     assert document["version"] == 1
@@ -76,19 +88,28 @@ async def test_tailor_resume_creates_unapproved_document(
     assert document["content_text"]
     assert result["application_id"] is not None
 
+    assert metadata["changes_summary"] == [
+        "Emphasized existing Laravel backend experience."
+    ]
+    assert metadata["warnings"] == [
+        "The supplied resume does not establish Kubernetes experience."
+    ]
+
     # The candidate's original resume must remain unchanged.
     await test_db.refresh(candidate)
     assert "billing systems" in candidate.resume_text
 
 
 @pytest.mark.asyncio
-async def test_tailor_resume_increments_version(test_db, monkeypatch):
+async def test_tailor_resume_increments_version(
+    test_db, monkeypatch
+):
     candidate, job = await create_resume_test_data(test_db)
 
     monkeypatch.setattr(
         service,
         "generate_text",
-        AsyncMock(return_value="Tailored resume draft."),
+        AsyncMock(return_value=make_tailoring_response()),
     )
 
     first = await service.tailor_resume_for_job(
@@ -123,10 +144,14 @@ async def test_tailor_resume_requires_original_resume(
     candidate.resume_text = None
     await test_db.commit()
 
-    generate_mock = AsyncMock(return_value="Should not be called.")
+    generate_mock = AsyncMock(
+        return_value=make_tailoring_response()
+    )
     monkeypatch.setattr(service, "generate_text", generate_mock)
 
-    with pytest.raises(ValueError, match="Candidate resume is required"):
+    with pytest.raises(
+        ValueError, match="Candidate resume is required"
+    ):
         await service.tailor_resume_for_job(
             test_db, candidate.id, job.id
         )
@@ -142,10 +167,14 @@ async def test_tailor_resume_requires_job_description(
     job.description = None
     await test_db.commit()
 
-    generate_mock = AsyncMock(return_value="Should not be called.")
+    generate_mock = AsyncMock(
+        return_value=make_tailoring_response()
+    )
     monkeypatch.setattr(service, "generate_text", generate_mock)
 
-    with pytest.raises(ValueError, match="job description is missing"):
+    with pytest.raises(
+        ValueError, match="job description is missing"
+    ):
         await service.tailor_resume_for_job(
             test_db, candidate.id, job.id
         )
@@ -162,7 +191,9 @@ async def test_tailor_resume_handles_ai_provider_failure(
     monkeypatch.setattr(
         service,
         "generate_text",
-        AsyncMock(side_effect=service.AIProviderError("Provider error")),
+        AsyncMock(
+            side_effect=service.AIProviderError("Provider error")
+        ),
     )
 
     with pytest.raises(service.ResumeTailoringError):
@@ -172,3 +203,53 @@ async def test_tailor_resume_handles_ai_provider_failure(
 
     result = await test_db.execute(select(ApplicationDocument))
     assert result.scalars().all() == []
+
+
+def test_parse_tailoring_response_rejects_invalid_json():
+    with pytest.raises(
+        service.ResumeTailoringError,
+        match="invalid preview response",
+    ):
+        service._parse_tailoring_response("not valid JSON")
+
+
+def test_parse_tailoring_response_rejects_missing_fields():
+    with pytest.raises(
+        service.ResumeTailoringError,
+        match="incomplete preview response",
+    ):
+        service._parse_tailoring_response(
+            json.dumps({"tailored_resume": "Resume content"})
+        )
+
+
+def test_parse_tailoring_response_rejects_invalid_field_types():
+    with pytest.raises(
+        service.ResumeTailoringError,
+        match="incomplete preview response",
+    ):
+        service._parse_tailoring_response(
+            json.dumps(
+                {
+                    "tailored_resume": "Resume content",
+                    "changes_summary": "This should be a list",
+                    "warnings": [],
+                }
+            )
+        )
+
+
+def test_parse_tailoring_response_accepts_empty_summary_and_warnings():
+    parsed = service._parse_tailoring_response(
+        json.dumps(
+            {
+                "tailored_resume": "Resume content",
+                "changes_summary": [],
+                "warnings": [],
+            }
+        )
+    )
+
+    assert parsed["tailored_resume"] == "Resume content"
+    assert parsed["changes_summary"] == []
+    assert parsed["warnings"] == []
