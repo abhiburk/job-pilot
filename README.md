@@ -1,7 +1,7 @@
 # 🚀 Job Pilot (Currently Building)
 
 <p align="center">
-  <b>Stop spending hours manually searching and applying. Let Job Pilot navigate your career search.</b>
+  <b>Automated job discovery & personalized daily email digests delivered straight to your inbox.</b>
 </p>
 
 <p align="center">
@@ -14,25 +14,24 @@
 
 ## 📌 Overview
 
-**Job Pilot** is a modular Python application designed to automate the tedious parts of the job search process. Whether you are tracking listings across multiple boards, filtering by your custom criteria, or streamlining application submissions, Job Pilot acts as your personal copilot in the modern job market.
+**Job Pilot** is an automated Python application designed to streamline your career search. It runs on a daily schedule, scanning multiple platforms for relevant openings matching your criteria, filtering out duplicates, and delivering a curated **daily job digest email** directly to your inbox so you never miss an opportunity.
 
 ---
 
 ## ✨ Key Features
 
-*   **Smart Job Scraping:** Automatically aggregate job listings from major platforms and company career pages.
-*   **Advanced Filtering:** Filter out roles based on keywords, remote/hybrid preferences, experience level, and salary expectations.
-*   **Automated Applications:** Streamline the submission process for supported platforms (with built-in safeguards and anti-bot handling).
-*   **Application Tracking:** Keep a clean log of applied roles, statuses, and follow-up dates in a local database or CSV.
-*   **Customizable Profiles:** Easily manage multiple resumes, cover letter templates, and portfolios for different job tracks.
+-   **Daily Email Digests:** Receive automated daily email reports summarizing new, highly relevant job postings.
+-   **Smart Deduplication:** Tracks delivered postings so you never receive duplicate listings in your inbox.
+-   **Automated Job Scraping:** Continuously aggregates listings from major job boards and company career pages.
+-   **Advanced Filtering:** Filters listings based on target keywords, remote/hybrid preferences, experience level, and salary ranges.
+-   **Application & Digest Tracking:** Logs job postings, match scores, and digest delivery history in a relational database.
 
 ---
 
 ## 🛠️ Tech Stack
 
-*   **Language:** Python 3.10+
-*   **Automation/Scraping:** Playwright / Selenium / BeautifulSoup
-*   **Data Handling:** Pandas, SQLite / SQLAlchemy
-*   **APIs:** Requests, platform-specific APIs
-
---
+-   **Language:** Python 3.10+
+-   **Database & ORM:** SQLAlchemy 2.0, PostgreSQL / SQLite
+-   **Automation & Scraping:** Playwright / BeautifulSoup / Requests
+-   **Notification & Email:** SMTP / Email APIs (SendGrid, Mailgun, or Gmail API)
+-   **Scheduling:** Cron / APScheduler / Celery

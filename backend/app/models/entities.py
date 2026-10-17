@@ -476,3 +476,67 @@ class JobDigestDelivery(Base):
         nullable=False,
         server_default=func.now(),
     )
+
+
+class JobAIAnalysis(Base):
+    __tablename__ = "job_ai_analyses"
+    __table_args__ = (
+        UniqueConstraint(
+            "candidate_id",
+            "job_id",
+            name="uq_candidate_job_ai_analysis",
+        ),
+        Index(
+            "ix_job_ai_analyses_candidate_status",
+            "candidate_id",
+            "status",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("candidates.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    job_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("jobs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    # pending, completed, or failed
+    status: Mapped[str] = mapped_column(
+        String(20),
+        default="pending",
+        nullable=False,
+    )
+
+    # AI assessment
+    fit_score: Mapped[int | None] = mapped_column(Integer)
+    recommendation: Mapped[str | None] = mapped_column(String(30))
+    summary: Mapped[str | None] = mapped_column(Text)
+
+    strengths: Mapped[list | None] = mapped_column(JSONB)
+    missing_requirements: Mapped[list | None] = mapped_column(JSONB)
+    evidence_gaps: Mapped[list | None] = mapped_column(JSONB)
+    concerns: Mapped[list | None] = mapped_column(JSONB)
+
+    # Track the input and model used for reproducibility
+    input_fingerprint: Mapped[str | None] = mapped_column(String(64))
+    model_version: Mapped[str | None] = mapped_column(String(100))
+    error_message: Mapped[str | None] = mapped_column(Text)
+
+    analyzed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+
+    created_at: Mapped[datetime] = created_at_column()
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )

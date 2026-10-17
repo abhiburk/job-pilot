@@ -14,7 +14,8 @@ from backend.app.models.entities import (
     JobSkill,
     Project,
     Skill,
-    JobDigestDelivery
+    JobDigestDelivery,
+    JobAIAnalysis
 )
 
 __all__ = [
@@ -32,5 +33,6 @@ __all__ = [
     "JobSkill",
     "Project",
     "Skill",
-    "JobDigestDelivery"
+    "JobDigestDelivery",
+    "JobAIAnalysis"
 ]

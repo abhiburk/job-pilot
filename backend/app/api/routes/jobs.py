@@ -17,7 +17,13 @@ from backend.app.services.job_matching import match_jobs
 from backend.app.services.match_confidence import calculate_match_confidence
 from backend.app.models import Candidate, Company, Job, JobMatch
 from sqlalchemy import and_, func, or_, select
+from uuid import UUID
 
+from fastapi import HTTPException
+from backend.app.services.job_ai_analysis import (
+    JobAIAnalysisError,
+    analyze_job_for_candidate,
+)
 
 router = APIRouter(prefix="/api/jobs", tags=["Jobs"])
 
@@ -404,4 +410,36 @@ async def discover_freehire_jobs(
         raise HTTPException(
             status_code=500,
             detail="Unable to save discovered Freehire jobs.",
+        ) from exc
+
+
+@router.post("/{job_id}/analyze/{candidate_id}")
+async def analyze_job(
+    job_id: UUID,
+    candidate_id: UUID,
+    force: bool = False,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        return await analyze_job_for_candidate(
+            db=db,
+            candidate_id=candidate_id,
+            job_id=job_id,
+            force=force,
+        )
+    except ValueError as exc:
+        message = str(exc)
+        status_code = 404 if message in {
+            "Candidate not found.",
+            "Job not found.",
+        } else 400
+
+        raise HTTPException(
+            status_code=status_code,
+            detail=message,
+        ) from exc
+    except JobAIAnalysisError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=str(exc),
         ) from exc
