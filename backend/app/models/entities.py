@@ -316,7 +316,6 @@ class JobMatch(Base):
     )
 
 
-
 class Application(Base):
     __tablename__ = "applications"
     __table_args__ = (
@@ -546,3 +545,32 @@ class JobAIAnalysis(Base):
         onupdate=func.now(),
         nullable=False,
     )
+
+class TextEmbedding(Base):
+    __tablename__ = "text_embeddings"
+    __table_args__ = (
+        UniqueConstraint(
+            "text_hash",
+            "model_name",
+            name="uq_text_embedding_hash_model",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+
+    text_hash: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+    )
+
+    model_name: Mapped[str] = mapped_column(
+        String(100),
+        nullable=False,
+    )
+
+    embedding: Mapped[list] = mapped_column(
+        JSONB,
+        nullable=False,
+    )
+
+    created_at: Mapped[datetime] = created_at_column()

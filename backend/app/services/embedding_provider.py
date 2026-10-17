@@ -1,5 +1,5 @@
 from google import genai
-from app.core.config import settings
+from backend.app.core.config import settings
 
 
 class GeminiEmbeddingProvider:

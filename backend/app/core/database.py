@@ -8,7 +8,6 @@ from sqlalchemy.orm import DeclarativeBase
 
 from backend.app.core.config import settings
 
-
 engine = create_async_engine(
     settings.database_url,
     echo=settings.debug,

@@ -1,7 +1,6 @@
 
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
@@ -9,7 +8,7 @@ from sqlalchemy.dialects import postgresql
 
 from backend.app.models import JobMatch
 from backend.app.services.job_matching import match_jobs
-
+from unittest.mock import AsyncMock, MagicMock, patch
 
 def mock_result(items):
     result = MagicMock()
@@ -95,26 +94,44 @@ async def test_match_jobs_processes_and_upserts_a_job():
         get=AsyncMock(return_value=candidate),
         execute=AsyncMock(
             side_effect=[
-                mock_result([]),  # Candidate skills from database
+                mock_result([]),   # Candidate skills from database
                 mock_result([job]),  # Active jobs
-                MagicMock(),  # JobMatch upsert
+                MagicMock(),       # JobMatch upsert
             ]
         ),
         commit=AsyncMock(),
         rollback=AsyncMock(),
     )
 
-    result = await match_jobs(db, candidate.id)
+    with patch(
+        "backend.app.services.job_matching.EmbeddingService"
+    ) as mock_embedding_service:
+        mock_embedding_service.return_value.get_embedding = AsyncMock(
+            side_effect=[
+                [0.1, 0.2, 0.3],  # Candidate embedding
+                [0.1, 0.2, 0.3],  # Job embedding
+            ]
+        )
+
+        mock_embedding_service.return_value.close = AsyncMock()
+
+        result = await match_jobs(db, candidate.id)
 
     assert result["jobs_processed"] == 1
     assert result["candidate_id"] == str(candidate.id)
 
-    # First query loads skills, second loads jobs, third writes the match.
-    assert db.execute.await_count == 3
     db.commit.assert_awaited_once()
     db.rollback.assert_not_awaited()
 
-    upsert_statement = db.execute.await_args_list[2].args[0]
+    # Find the upsert statement without assuming its position.
+    upsert_statement = next(
+        call.args[0]
+        for call in db.execute.await_args_list
+        if "uq_candidate_job_match" in str(
+            call.args[0].compile(dialect=postgresql.dialect())
+        )
+    )
+
     compiled = str(
         upsert_statement.compile(dialect=postgresql.dialect())
     )
@@ -132,8 +149,8 @@ async def test_match_jobs_rolls_back_when_upsert_fails():
         get=AsyncMock(return_value=candidate),
         execute=AsyncMock(
             side_effect=[
-                mock_result([]),
-                mock_result([job]),
+                mock_result([]),    # Candidate skills from database
+                mock_result([job]), # Active jobs
                 RuntimeError("Database write failed"),
             ]
         ),
@@ -141,8 +158,20 @@ async def test_match_jobs_rolls_back_when_upsert_fails():
         rollback=AsyncMock(),
     )
 
-    with pytest.raises(RuntimeError, match="Database write failed"):
-        await match_jobs(db, candidate.id)
+    with patch(
+        "backend.app.services.job_matching.EmbeddingService"
+    ) as mock_embedding_service:
+        mock_embedding_service.return_value.get_embedding = AsyncMock(
+            side_effect=[
+                [0.1, 0.2, 0.3],  # Candidate embedding
+                [0.1, 0.2, 0.3],  # Job embedding
+            ]
+        )
+
+        mock_embedding_service.return_value.close = AsyncMock()
+
+        with pytest.raises(RuntimeError, match="Database write failed"):
+            await match_jobs(db, candidate.id)
 
     db.rollback.assert_awaited_once()
     db.commit.assert_not_awaited()

@@ -9,7 +9,10 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models import Candidate, CandidateSkill, Job, JobMatch, Skill
-
+from backend.app.services.embedding_service import (
+    EmbeddingService,
+    cosine_similarity,
+)
 
 MODEL_VERSION = "rules-v2"
 
@@ -543,6 +546,30 @@ def build_match_explanation(
 
     return " ".join(details)
 
+def build_candidate_embedding_text(candidate) -> str:
+    return "\n".join(
+        part.strip()
+        for part in [
+            getattr(candidate, "headline", None),
+            getattr(candidate, "summary", None),
+            getattr(candidate, "resume_text", None),
+        ]
+        if part and part.strip()
+    )
+
+
+def build_job_embedding_text(job) -> str:
+    return "\n".join(
+        part.strip()
+        for part in [
+            getattr(job, "title", None),
+            getattr(job, "description", None),
+            getattr(job, "experience_level", None),
+            getattr(job, "location", None),
+        ]
+        if part and part.strip()
+    )
+
 async def match_jobs(
     db: AsyncSession,
     candidate_id,
@@ -591,6 +618,22 @@ async def match_jobs(
     jobs_result = await db.execute(select(Job).where(Job.is_active.is_(True)))
     jobs = jobs_result.scalars().all()
 
+    embedding_service = EmbeddingService()
+    candidate_embedding = None
+
+    try:
+        candidate_text = build_candidate_embedding_text(candidate)
+
+        if candidate_text:
+            candidate_embedding = await embedding_service.get_embedding(
+                db,
+                candidate_text,
+            )
+    except Exception:
+        # We'll preserve rule-based matching if Gemini is unavailable.
+        # Log this exception in the production implementation.
+        candidate_embedding = None
+
     processed = 0
     try:
         for job in jobs:
@@ -609,6 +652,30 @@ async def match_jobs(
             )
 
             role_score = calculate_role_relevance_score(job, candidate)
+
+            if candidate_embedding is not None:
+                job_text = build_job_embedding_text(job)
+
+                if job_text:
+                    job_embedding = await embedding_service.get_embedding(
+                        db,
+                        job_text,
+                    )
+
+                    similarity = cosine_similarity(
+                        candidate_embedding,
+                        job_embedding,
+                    )
+
+                    semantic_score = Decimal(
+                        str(max(0.0, min(100.0, similarity * 100)))
+                    ).quantize(Decimal("0.01"))
+
+                    if role_score is not None:
+                        role_score = (
+                            Decimal(str(role_score)) * Decimal("0.75")
+                            + semantic_score * Decimal("0.25")
+                        ).quantize(Decimal("0.01"))
 
             experience_score = calculate_experience_score(
                 getattr(candidate, "years_experience", None),
@@ -692,6 +759,8 @@ async def match_jobs(
     except Exception:
         await db.rollback()
         raise
+    finally:
+        await embedding_service.close()
 
     return {
         "candidate_id": str(candidate_id),

@@ -1,6 +1,6 @@
 import asyncio
 
-from app.services.embedding_provider import GeminiEmbeddingProvider
+from backend.app.services.embedding_provider import GeminiEmbeddingProvider
 
 
 async def main():
