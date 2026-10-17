@@ -22,6 +22,7 @@ from backend.app.services.ai_provider import (
 )
 from datetime import datetime, time, timedelta, timezone
 from sqlalchemy import func, select
+from backend.app.models import Application, ApplicationDocument
 
 router = APIRouter(prefix="/api/applications", tags=["Applications"])
 
@@ -221,6 +222,124 @@ async def get_application_summary(
         },
     }
 
+
+def serialize_document(document: ApplicationDocument) -> dict:
+    return {
+        "id": str(document.id),
+        "application_id": str(document.application_id),
+        "document_type": document.document_type,
+        "version": document.version,
+        "content_text": document.content_text,
+        "generation_metadata": document.generation_metadata,
+        "is_approved": document.is_approved,
+        "approved_at": (
+            document.approved_at.isoformat()
+            if document.approved_at
+            else None
+        ),
+        "created_at": document.created_at.isoformat(),
+    }
+
+
+@router.get("/{application_id}/documents")
+async def list_application_documents(
+    application_id: UUID,
+    candidate_id: UUID = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    application = await db.scalar(
+        select(Application).where(
+            Application.id == application_id,
+            Application.candidate_id == candidate_id,
+        )
+    )
+    if application is None:
+        raise HTTPException(status_code=404, detail="Application not found")
+
+    result = await db.execute(
+        select(ApplicationDocument)
+        .where(ApplicationDocument.application_id == application_id)
+        .order_by(
+            ApplicationDocument.document_type,
+            ApplicationDocument.version.desc(),
+        )
+    )
+
+    return [serialize_document(doc) for doc in result.scalars().all()]
+
+
+@router.get("/{application_id}/documents/{document_id}")
+async def get_application_document(
+    application_id: UUID,
+    document_id: UUID,
+    candidate_id: UUID = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    application = await db.scalar(
+        select(Application).where(
+            Application.id == application_id,
+            Application.candidate_id == candidate_id,
+        )
+    )
+    if application is None:
+        raise HTTPException(status_code=404, detail="Application not found")
+
+    document = await db.scalar(
+        select(ApplicationDocument).where(
+            ApplicationDocument.id == document_id,
+            ApplicationDocument.application_id == application_id,
+        )
+    )
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    return serialize_document(document)
+
+
+@router.patch(
+    "/{application_id}/documents/{document_id}/approve"
+)
+async def approve_application_document(
+    application_id: UUID,
+    document_id: UUID,
+    candidate_id: UUID = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    application = await db.scalar(
+        select(Application).where(
+            Application.id == application_id,
+            Application.candidate_id == candidate_id,
+        )
+    )
+    if application is None:
+        raise HTTPException(status_code=404, detail="Application not found")
+
+    document = await db.scalar(
+        select(ApplicationDocument).where(
+            ApplicationDocument.id == document_id,
+            ApplicationDocument.application_id == application_id,
+        )
+    )
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if not document.is_approved:
+        document.is_approved = True
+        document.approved_at = datetime.now(timezone.utc)
+
+        try:
+            await db.commit()
+            await db.refresh(document)
+        except SQLAlchemyError as exc:
+            await db.rollback()
+            raise HTTPException(
+                status_code=500,
+                detail="Unable to approve document.",
+            ) from exc
+
+    return serialize_document(document)
+
+
 @router.patch("/{application_id}", response_model=ApplicationRead)
 async def update_application(
     application_id: UUID,
@@ -384,9 +503,64 @@ JOB DETAILS:
             detail=str(exc),
         ) from exc
 
+    
+    # Find or create the application for this candidate and job.
+    result = await db.execute(
+        select(Application).where(
+            Application.candidate_id == payload.candidate_id,
+            Application.job_id == payload.job_id,
+        )
+    )
+    application = result.scalar_one_or_none()
+
+    if application is None:
+        application = Application(
+            candidate_id=payload.candidate_id,
+            job_id=payload.job_id,
+            status="saved",
+        )
+        db.add(application)
+        await db.flush()
+
+    # Determine the next document version.
+    result = await db.execute(
+        select(func.max(ApplicationDocument.version)).where(
+            ApplicationDocument.application_id == application.id,
+            ApplicationDocument.document_type == "cover_letter",
+        )
+    )
+    latest_version = result.scalar_one_or_none() or 0
+
+    document = ApplicationDocument(
+        application_id=application.id,
+        document_type="cover_letter",
+        version=latest_version + 1,
+        content_text=cover_letter,
+        generation_metadata={
+            "model": MODEL,
+            "job_id": str(payload.job_id),
+            "candidate_id": str(payload.candidate_id),
+        },
+        is_approved=False,
+    )
+
+    db.add(document)
+
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="Could not save the generated cover letter.",
+        )
+
+    await db.refresh(document)
+
     return CoverLetterResponse(
         candidate_id=payload.candidate_id,
         job_id=payload.job_id,
         model=MODEL,
         cover_letter=cover_letter,
     )
+
