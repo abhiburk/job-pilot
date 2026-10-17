@@ -254,6 +254,7 @@ def test_get_matches_returns_ranked_results(client, db):
         strengths=["Matching skill: Laravel"],
         gaps=["Docker"],
         explanation="Good match",
+        score_coverage=Decimal("80.00"),
     )
 
     db.get.return_value = candidate

@@ -93,6 +93,48 @@ def extract_skills(text: str | None) -> set[str]:
     return found
 
 
+def extract_candidate_skills(text: str | None) -> set[str]:
+    """Extract candidate skills while filtering explicitly weak evidence."""
+    if not text:
+        return set()
+
+    weak_evidence = re.compile(
+        r"(?:"
+        r"learning(?:\s+about)?|"
+        r"interested\s+in|"
+        r"want(?:s)?\s+to\s+learn|"
+        r"beginner\s+(?:in|with)|"
+        r"no\s+experience\s+with|"
+        r"not\s+experienced\s+in|"
+        r"not\s+skilled\s+in|"
+        r"haven't\s+used|"
+        r"have\s+not\s+used"
+        r")\s*$",
+        re.IGNORECASE,
+    )
+
+    found = set()
+
+    for skill in KNOWN_SKILLS:
+        aliases = SKILL_ALIASES.get(skill, [skill])
+
+        for alias in aliases:
+            pattern = re.compile(
+                rf"(?<!\w){re.escape(alias)}(?!\w)",
+                re.IGNORECASE,
+            )
+
+            for match in pattern.finditer(text):
+                # Check only the text immediately before this mention.
+                prefix = text[max(0, match.start() - 45):match.start()]
+
+                if not weak_evidence.search(prefix):
+                    found.add(skill)
+                    break
+
+    return found
+
+
 def normalize_title(value: str | None) -> str:
     """Normalize job titles while preserving technical symbols."""
     value = normalize(value)
@@ -384,21 +426,46 @@ def calculate_skills_score(
     return score.quantize(Decimal("0.01"))
 
 
+
 def weighted_score(components: dict[str, Any]) -> Decimal:
-    """
-    Preserve the established scoring behavior:
-    missing components contribute a neutral score of 50.
-    """
+    """Calculate a score using available components and fixed weights."""
     total = Decimal("0")
 
     for name, weight in WEIGHTS.items():
         value = components.get(name)
-        if value is None:
-            value = Decimal("50")
 
-        total += Decimal(str(value)) * weight
+        # Unknown components contribute nothing; they are not a score of 50.
+        if value is None:
+            continue
+
+        normalized_value = max(
+            Decimal("0"),
+            min(Decimal("100"), Decimal(str(value))),
+        )
+        total += normalized_value * weight
 
     return total.quantize(Decimal("0.01"))
+
+
+def calculate_score_coverage(components: dict[str, Any]) -> Decimal:
+    """Return the percentage of total scoring weight that was assessed."""
+    available_weight = sum(
+        (
+            weight
+            for name, weight in WEIGHTS.items()
+            if components.get(name) is not None
+        ),
+        Decimal("0"),
+    )
+
+    total_weight = sum(WEIGHTS.values(), Decimal("0"))
+
+    if total_weight == 0:
+        return Decimal("0.00")
+
+    return (
+        available_weight / total_weight * Decimal("100")
+    ).quantize(Decimal("0.01"))
 
 
 def build_match_explanation(
@@ -494,6 +561,21 @@ async def match_jobs(
     skill_result = await db.execute(skill_query)
     candidate_skills = set(skill_result.scalars().all())
 
+    candidate_skills.update(
+        extract_candidate_skills(
+            " ".join(
+                filter(
+                    None,
+                    [
+                        candidate.headline,
+                        candidate.summary,
+                        candidate.resume_text,
+                    ],
+                )
+            )
+        )
+    )
+
     profile_text = " ".join(
         filter(
             None,
@@ -552,6 +634,7 @@ async def match_jobs(
             }
 
             score = weighted_score(components)
+            coverage = calculate_score_coverage(components)
 
             # Prevent unrelated roles from receiving a high score just because
             # several components have missing data.
@@ -590,6 +673,7 @@ async def match_jobs(
                 "gaps": sorted(missing_skills),
                 "explanation": explanation,
                 "model_version": MODEL_VERSION,
+                "score_coverage": coverage,
             }
 
             statement = insert(JobMatch).values(**payload)

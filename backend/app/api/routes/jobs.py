@@ -280,6 +280,11 @@ async def get_job_matches(
             "remote_type": job.remote_type,
             "job_url": job.job_url,
             "score": float(match.score),
+            "score_coverage": (
+                float(match.score_coverage)
+                if match.score_coverage is not None
+                else 0.0
+            ),
             "confidence_score": calculate_match_confidence(
                 job_title=job.title,
                 job_description=job.description,
@@ -341,6 +346,11 @@ async def get_job_matches(
                     float(match.salary_score)
                     if getattr(match, "salary_score", None) is not None
                     else None
+                ),
+                "coverage": (
+                    float(match.score_coverage)
+                    if match.score_coverage is not None
+                    else 0.0
                 ),
             },
         }

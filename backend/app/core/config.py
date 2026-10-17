@@ -29,5 +29,7 @@ class Settings(BaseSettings):
     job_digest_max_jobs: int = 10
     job_digest_timezone: str = "Asia/Kolkata"
 
+    job_digest_min_coverage: float = 60.0
+
 
 settings = Settings()

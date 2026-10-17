@@ -1,7 +1,7 @@
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
-
+import logging
 from backend.app.core.config import settings
 from backend.app.models.entities import (
     Candidate,
@@ -14,6 +14,8 @@ from backend.app.services.email_service import (
     escape_html,
     send_email,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def build_digest_email(rows: list[tuple]) -> tuple[str, str, str]:
@@ -33,30 +35,98 @@ def build_digest_email(rows: list[tuple]) -> tuple[str, str, str]:
     for match, job, company_name in rows:
         company = company_name or "Company not specified"
         score = float(match.score or 0)
+        coverage_value = getattr(match, "score_coverage", None)
+        coverage = (
+            float(coverage_value)
+            if coverage_value is not None
+            else None
+        )
+        location = job.location or "Location not specified"
         url = job.job_url or ""
 
+        strengths = getattr(match, "strengths", None) or []
+        gaps = getattr(match, "gaps", None) or []
+        explanation = getattr(match, "explanation", None) or ""
+
+        matched_skills = [
+            item.removeprefix("Matching skill: ")
+            for item in strengths
+            if isinstance(item, str)
+            and item.startswith("Matching skill: ")
+        ]
+
+        # Plain-text email
         text_lines.extend([
             f"{job.title} — {company}",
             f"Match score: {score:.0f}/100",
-            f"Location: {job.location or 'Not specified'}",
-            f"Apply: {url}",
-            "",
+            (
+                f"Data coverage: {coverage:.0f}%"
+                if coverage is not None
+                else "Data coverage: Not available"
+            ),
+            f"Location: {location}",
         ])
 
+        if matched_skills:
+            text_lines.append(
+                "Matching skills: " + ", ".join(matched_skills)
+            )
+
+        if gaps:
+            text_lines.append(
+                "Potential gaps: "
+                + "; ".join(str(gap) for gap in gaps)
+            )
+
+        if explanation:
+            text_lines.append(f"Why it matches: {explanation}")
+
+        if url.startswith(("https://", "http://")):
+            text_lines.append(f"View job / Apply: {url}")
+
+        text_lines.append("")
+
+        # HTML email
         html_parts.append(
             "<section style='margin:20px 0;padding:16px;"
             "border:1px solid #ddd;border-radius:8px'>"
             f"<h3>{escape_html(job.title)}</h3>"
             f"<p>{escape_html(company)} · "
-            f"{escape_html(job.location or 'Location not specified')}</p>"
+            f"{escape_html(location)}</p>"
             f"<p><strong>Match score: {score:.0f}/100</strong></p>"
-            + (
-                f"<p><a href='{escape_html(url)}'>View job / Apply</a></p>"
-                if url.startswith(("https://", "http://"))
-                else ""
-            )
-            + "</section>"
+            f"<p>Data coverage: "
+            f"{f'{coverage:.0f}%' if coverage is not None else 'Not available'}"
+            "</p>"
         )
+
+        if matched_skills:
+            skills_html = ", ".join(
+                escape_html(skill) for skill in matched_skills
+            )
+            html_parts.append(
+                f"<p><strong>Matching skills:</strong> {skills_html}</p>"
+            )
+
+        if gaps:
+            gaps_html = "; ".join(
+                escape_html(str(gap)) for gap in gaps
+            )
+            html_parts.append(
+                f"<p><strong>Potential gaps:</strong> {gaps_html}</p>"
+            )
+
+        if explanation:
+            html_parts.append(
+                f"<p><strong>Why it matches:</strong> "
+                f"{escape_html(explanation)}</p>"
+            )
+
+        if url.startswith(("https://", "http://")):
+            html_parts.append(
+                f"<p><a href='{escape_html(url)}'>View job / Apply</a></p>"
+            )
+
+        html_parts.append("</section>")
 
     html_parts.extend([
         "<p>You're receiving this because you have a JobPilot profile.</p>",
@@ -89,6 +159,7 @@ async def send_candidate_digest(
         .where(
             JobMatch.candidate_id == candidate.id,
             JobMatch.score >= settings.job_digest_min_score,
+            JobMatch.score_coverage >= settings.job_digest_min_coverage,
             Job.is_active.is_(True),
             ~already_sent,
         )
@@ -102,7 +173,11 @@ async def send_candidate_digest(
     result = await db.execute(query)
     rows = list(result.all())
 
-    print(f"Job digest: {candidate.email} has {len(rows)} new jobs.")
+    logger.info(
+        "Job digest: candidate_id=%s has %s new jobs.",
+        candidate.id,
+        len(rows),
+    )
 
     if not rows:
         return 0
@@ -148,8 +223,10 @@ async def send_daily_job_digests(db: AsyncSession) -> dict[str, int]:
         except Exception:
             await db.rollback()
             failed_candidates += 1
-            # Continue processing other candidates.
-            # Configure application logging to capture the exception.
+            logger.exception(
+                "Failed to send daily job digest for candidate_id=%s",
+                candidate.id,
+            )
 
     return {
         "candidates_checked": len(candidates),

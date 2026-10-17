@@ -13,7 +13,8 @@ from backend.app.services.job_matching import (
     normalize,
     weighted_score,
     calculate_role_relevance_score,
-    normalize_title
+    normalize_title,
+    extract_candidate_skills
 )
 
 
@@ -212,7 +213,7 @@ def test_weighted_score_uses_all_available_components():
         "salary": Decimal("0"),
     })
 
-    assert score == Decimal("72.50")
+    assert score == Decimal("62.50")
 
 
 def test_weighted_score_uses_neutral_score_for_missing_components():
@@ -223,7 +224,7 @@ def test_weighted_score_uses_neutral_score_for_missing_components():
         "salary": None,
     })
 
-    assert score == Decimal("70.00")
+    assert score == Decimal("40.00")
 
 
 def test_weighted_score_returns_neutral_score_when_no_components_are_available():
@@ -234,7 +235,7 @@ def test_weighted_score_returns_neutral_score_when_no_components_are_available()
         "salary": None,
     })
 
-    assert score == Decimal("50.00")
+    assert score == Decimal("0.00")
 
 
 def test_extract_kubernetes_skill():
@@ -390,4 +391,66 @@ def test_weighted_score_preserves_neutral_missing_components():
         "salary": None,
     })
 
-    assert score == Decimal("70.00")
+    assert score == Decimal("40.00")
+
+def test_weighted_score_ignores_missing_components():
+    score = weighted_score({
+        "role_relevance": None,
+        "skills": Decimal("100"),
+        "experience": None,
+        "preferences": None,
+        "salary": None,
+    })
+
+    assert score == Decimal("40.00")
+
+
+def test_weighted_score_returns_zero_when_all_components_are_missing():
+    score = weighted_score({
+        "role_relevance": None,
+        "skills": None,
+        "experience": None,
+        "preferences": None,
+        "salary": None,
+    })
+
+    assert score == Decimal("0.00")
+
+
+def test_candidate_skills_excludes_learning_mentions():
+    assert extract_candidate_skills("Currently learning Python") == set()
+
+
+def test_candidate_skills_excludes_interest_mentions():
+    assert extract_candidate_skills(
+        "Interested in machine learning"
+    ) == set()
+
+
+def test_candidate_skills_excludes_explicit_lack_of_experience():
+    assert extract_candidate_skills(
+        "I have no experience with Python"
+    ) == set()
+
+
+def test_candidate_skills_keeps_demonstrated_skills():
+    skills = extract_candidate_skills(
+        "Built APIs using Python and Laravel in production"
+    )
+
+    assert "Python" in skills
+    assert "Laravel" in skills
+
+
+def test_candidate_skills_keeps_other_skills_when_one_is_being_learned():
+    skills = extract_candidate_skills(
+        "Learning Python. Built production APIs using Laravel."
+    )
+
+    assert "Python" not in skills
+    assert "Laravel" in skills
+
+
+def test_candidate_skills_handles_empty_text():
+    assert extract_candidate_skills(None) == set()
+    assert extract_candidate_skills("") == set()

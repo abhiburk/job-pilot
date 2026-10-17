@@ -309,6 +309,12 @@ class JobMatch(Base):
     created_at: Mapped[datetime] = created_at_column()
     role_relevance_score: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
     salary_score: Mapped[Decimal | None] = mapped_column(Numeric(5, 2)) 
+    score_coverage: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+    )
+
 
 
 class Application(Base):

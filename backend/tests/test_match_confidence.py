@@ -27,7 +27,7 @@ def test_missing_job_information_reduces_confidence():
         candidate_resume_text=None,
     )
 
-    assert confidence == 16.67
+    assert confidence == 15
 
 
 def test_salary_range_is_not_required_for_high_confidence():
@@ -41,4 +41,4 @@ def test_salary_range_is_not_required_for_high_confidence():
         candidate_resume_text="Backend engineer " * 20,
     )
 
-    assert confidence == 83.33
+    assert confidence == 90
