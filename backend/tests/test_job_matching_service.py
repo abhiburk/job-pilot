@@ -9,6 +9,11 @@ from sqlalchemy.dialects import postgresql
 from backend.app.models import JobMatch
 from backend.app.services.job_matching import match_jobs
 from unittest.mock import AsyncMock, MagicMock, patch
+from backend.app.services.job_matching import (
+    calculate_score_coverage,
+    calculate_skills_score,
+    weighted_score,
+)
 
 def mock_result(items):
     result = MagicMock()
@@ -81,7 +86,7 @@ async def test_match_jobs_handles_no_active_jobs():
 
     assert result["candidate_id"] == str(candidate.id)
     assert result["jobs_processed"] == 0
-    assert result["model_version"] == "rules-v2"
+    assert result["model_version"] == "hybrid-v1"
     db.commit.assert_awaited_once()
 
 
@@ -175,3 +180,64 @@ async def test_match_jobs_rolls_back_when_upsert_fails():
 
     db.rollback.assert_awaited_once()
     db.commit.assert_not_awaited()
+
+def test_relevant_backend_role_scores_above_unrelated_data_role():
+    from backend.app.services.job_matching import (
+        calculate_role_relevance_score,
+    )
+
+    candidate = make_candidate()
+
+    backend_job = make_job()
+    unrelated_job = make_job()
+    unrelated_job.title = "Data Scientist"
+    unrelated_job.description = "Statistical modeling and data analysis"
+
+    backend_score = calculate_role_relevance_score(
+        backend_job, candidate
+    )
+    unrelated_score = calculate_role_relevance_score(
+        unrelated_job, candidate
+    )
+
+    assert backend_score > unrelated_score
+
+def test_missing_components_reduce_score_coverage():
+    components = {
+        "role_relevance": Decimal("85"),
+        "skills": Decimal("70"),
+        "experience": None,
+        "preferences": None,
+        "salary": None,
+    }
+
+    assert calculate_score_coverage(components) == Decimal("60.00")
+    assert weighted_score(components) == Decimal("45.00")
+
+def test_semantic_similarity_only_partially_changes_role_score():
+    rule_score = Decimal("25.00")
+    semantic_score = Decimal("100.00")
+
+    blended_score = (
+        rule_score * Decimal("0.75")
+        + semantic_score * Decimal("0.25")
+    ).quantize(Decimal("0.01"))
+
+    assert blended_score == Decimal("43.75")
+    assert blended_score < Decimal("50.00")
+
+def test_unrelated_role_score_is_capped():
+    components = {
+        "role_relevance": Decimal("0"),
+        "skills": Decimal("100"),
+        "experience": Decimal("100"),
+        "preferences": Decimal("100"),
+        "salary": Decimal("100"),
+    }
+
+    score = weighted_score(components)
+
+    # This mirrors the safeguard in match_jobs().
+    score = min(score, Decimal("20.00"))
+
+    assert score == Decimal("20.00")

@@ -13,8 +13,12 @@ from backend.app.services.embedding_service import (
     EmbeddingService,
     cosine_similarity,
 )
+import logging
 
-MODEL_VERSION = "rules-v2"
+from backend.app.services.embedding_provider import EmbeddingProviderError
+logger = logging.getLogger(__name__)
+
+MODEL_VERSION = "hybrid-v1"
 
 WEIGHTS = {
     "role_relevance": Decimal("0.20"),
@@ -760,7 +764,11 @@ async def match_jobs(
         await db.rollback()
         raise
     finally:
-        await embedding_service.close()
+        if embedding_service is not None:
+            try:
+                await embedding_service.close()
+            except Exception:
+                logger.exception("Failed to close embedding provider")
 
     return {
         "candidate_id": str(candidate_id),
