@@ -1,6 +1,7 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pathlib import Path
 
-
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 class Settings(BaseSettings):
     app_name: str = "JobPilot"
     app_env: str = "local"
@@ -10,8 +11,9 @@ class Settings(BaseSettings):
     redis_url: str
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=PROJECT_ROOT / ".env",
         env_file_encoding="utf-8",
+        extra="ignore",
     )
     groq_api_key: str | None = None
     groq_model: str = "openai/gpt-oss-20b"
@@ -30,6 +32,9 @@ class Settings(BaseSettings):
     job_digest_timezone: str = "Asia/Kolkata"
 
     job_digest_min_coverage: float = 60.0
+
+    gemini_api_key: str | None = None
+    gemini_embedding_model: str = "gemini-embedding-2"
 
 
 settings = Settings()
