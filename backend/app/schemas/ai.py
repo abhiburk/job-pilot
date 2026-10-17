@@ -14,3 +14,8 @@ class CoverLetterResponse(BaseModel):
     job_id: UUID
     model: str
     cover_letter: str
+
+
+class ResumeTailoringRequest(BaseModel):
+    candidate_id: UUID
+    job_id: UUID
