@@ -10,7 +10,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import settings
-from backend.app.models import Candidate, Job, JobAIAnalysis, JobMatch
+from backend.app.models import (
+    Candidate,
+    CandidateSkill,
+    Job,
+    JobAIAnalysis,
+    JobMatch,
+    Skill,
+)
 from backend.app.services.ai_provider import generate_text
 
 
@@ -47,6 +54,15 @@ Required JSON structure:
 fit_score must be an integer from 0 to 100.
 recommendation must be strong_fit, possible_fit, or poor_fit.
 All list fields must contain strings. Use empty lists when appropriate.
+
+Use the candidate's structured skills, proficiency levels, and years
+of experience alongside their resume and profile.
+
+Do not assume a candidate lacks a skill merely because it is absent
+from the resume. Distinguish confirmed missing requirements from
+requirements for which evidence is insufficient.
+
+Do not invent qualifications, skill levels, or years of experience.
 """
 
 
@@ -156,6 +172,28 @@ async def analyze_job_for_candidate(
     )
     match = match_result.scalar_one_or_none()
 
+    skill_result = await db.execute(
+        select(CandidateSkill, Skill)
+        .join(Skill, CandidateSkill.skill_id == Skill.id)
+        .where(CandidateSkill.candidate_id == candidate_id)
+        .order_by(Skill.name)
+    )
+
+    candidate_skills = [
+        {
+            "name": skill.name,
+            "category": skill.category,
+            "proficiency": candidate_skill.proficiency,
+            "years_experience": (
+                str(candidate_skill.years_experience)
+                if candidate_skill.years_experience is not None
+                else None
+            ),
+            "is_primary": candidate_skill.is_primary,
+        }
+        for candidate_skill, skill in skill_result.all()
+    ]
+
     candidate_data = {
         "full_name": candidate.full_name,
         "headline": candidate.headline,
@@ -167,6 +205,7 @@ async def analyze_job_for_candidate(
         "preferred_employment_types": candidate.preferred_employment_types,
         "preferred_work_modes": candidate.preferred_work_modes,
         "resume_text": candidate.resume_text,
+        "skills": candidate_skills,
     }
 
     job_data = {
