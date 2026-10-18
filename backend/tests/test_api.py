@@ -14,6 +14,9 @@ from backend.app.core.database import get_db
 from backend.app.main import app
 from backend.app.models import Candidate
 
+from backend.app.api.routes import applications as applications_routes
+from backend.app.models import Application, ApplicationDocument
+from backend.app.models import Company, Job
 
 @pytest.fixture
 def db():
@@ -24,15 +27,19 @@ def db():
     session.refresh = AsyncMock()
     session.rollback = AsyncMock()
 
-    def add_candidate(candidate):
-        if candidate.id is None:
-            candidate.id = uuid4()
+    
+    def add_candidate(instance):
+        if getattr(instance, "id", None) is None:
+            instance.id = uuid4()
 
         now = datetime.now(timezone.utc)
-        if candidate.created_at is None:
-            candidate.created_at = now
-        if candidate.updated_at is None:
-            candidate.updated_at = now
+
+        if hasattr(instance, "created_at") and instance.created_at is None:
+            instance.created_at = now
+
+        if hasattr(instance, "updated_at") and instance.updated_at is None:
+            instance.updated_at = now
+
 
     session.add.side_effect = add_candidate
     return session
@@ -610,3 +617,362 @@ def test_application_summary_returns_404_for_missing_candidate(client, db):
     assert response.json()["detail"] == "Candidate not found"
 
     db.execute.assert_not_awaited()
+
+def test_generate_cover_letter_saves_unapproved_document(
+    client, db, monkeypatch
+):
+    candidate_id = uuid4()
+    job_id = uuid4()
+    application_id = uuid4()
+
+    candidate = make_candidate(id=candidate_id)
+    job = SimpleNamespace(
+        id=job_id,
+        company_id=None,
+        title="Backend Developer",
+        location="Remote",
+        employment_type="Full-time",
+        experience_level="Senior",
+        description="Build backend APIs using Python and PostgreSQL.",
+        is_active=True,
+    )
+
+    application = SimpleNamespace(
+        id=application_id,
+        candidate_id=candidate_id,
+        job_id=job_id,
+        status="saved",
+    )
+
+    db.get.side_effect = [candidate, job]
+
+    # First query: find an existing application.
+    # Second query: find the latest cover-letter version.
+    application_result = MagicMock()
+    application_result.scalar_one_or_none.return_value = application
+
+    version_result = MagicMock()
+    version_result.scalar_one_or_none.return_value = 0
+
+    db.execute.side_effect = [application_result, version_result]
+
+    generated_letter = (
+        "Dear Hiring Team,\n\n"
+        "My backend development experience aligns with this role."
+    )
+
+    async def fake_generate_text(**kwargs):
+        return generated_letter
+
+    monkeypatch.setattr(
+        applications_routes,
+        "generate_text",
+        fake_generate_text,
+    )
+
+    response = client.post(
+        "/api/applications/generate-cover-letter",
+        json={
+            "candidate_id": str(candidate_id),
+            "job_id": str(job_id),
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["cover_letter"] == generated_letter
+    assert response.json()["candidate_id"] == str(candidate_id)
+    assert response.json()["job_id"] == str(job_id)
+
+    saved_document = next(
+        item
+        for item in db.add.call_args_list
+        if isinstance(item.args[0], ApplicationDocument)
+    )
+    document = saved_document.args[0]
+
+    assert document.application_id == application_id
+    assert document.document_type == "cover_letter"
+    assert document.version == 1
+    assert document.content_text == generated_letter
+    assert document.is_approved is False
+
+    db.commit.assert_awaited_once()
+    db.refresh.assert_awaited_once_with(document)
+
+
+def test_generate_cover_letter_increments_document_version(
+    client, db, monkeypatch
+):
+    candidate_id = uuid4()
+    job_id = uuid4()
+    application_id = uuid4()
+
+    candidate = make_candidate(id=candidate_id)
+    job = SimpleNamespace(
+        id=job_id,
+        company_id=None,
+        title="Backend Developer",
+        location="Remote",
+        employment_type="Full-time",
+        experience_level="Senior",
+        description="Build backend APIs using Python and PostgreSQL.",
+        is_active=True,
+    )
+    application = SimpleNamespace(
+        id=application_id,
+        candidate_id=candidate_id,
+        job_id=job_id,
+        status="saved",
+    )
+
+    # Simulate two requests: each loads the candidate and job.
+    db.get.side_effect = [
+        candidate, job,
+        candidate, job,
+    ]
+
+    # Each request finds the existing application.
+    application_result = MagicMock()
+    application_result.scalar_one_or_none.return_value = application
+
+    # First request sees no previous version; second sees version 1.
+    version_1_result = MagicMock()
+    version_1_result.scalar_one_or_none.return_value = 0
+
+    version_2_result = MagicMock()
+    version_2_result.scalar_one_or_none.return_value = 1
+
+    db.execute.side_effect = [
+        application_result,
+        version_1_result,
+        application_result,
+        version_2_result,
+    ]
+
+    generated_letters = iter([
+        "First version of the cover letter.",
+        "Updated version of the cover letter.",
+    ])
+
+    async def fake_generate_text(**kwargs):
+        return next(generated_letters)
+
+    monkeypatch.setattr(
+        applications_routes,
+        "generate_text",
+        fake_generate_text,
+    )
+
+    payload = {
+        "candidate_id": str(candidate_id),
+        "job_id": str(job_id),
+    }
+
+    first_response = client.post(
+        "/api/applications/generate-cover-letter",
+        json=payload,
+    )
+    second_response = client.post(
+        "/api/applications/generate-cover-letter",
+        json=payload,
+    )
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+
+    documents = [
+        call.args[0]
+        for call in db.add.call_args_list
+        if isinstance(call.args[0], ApplicationDocument)
+    ]
+
+    assert len(documents) == 2
+
+    assert documents[0].version == 1
+    assert documents[0].content_text == (
+        "First version of the cover letter."
+    )
+
+    assert documents[1].version == 2
+    assert documents[1].content_text == (
+        "Updated version of the cover letter."
+    )
+
+    assert all(
+        document.application_id == application_id
+        for document in documents
+    )
+    assert all(
+        document.is_approved is False
+        for document in documents
+    )
+
+    assert db.commit.await_count == 2
+
+
+def test_approve_document_does_not_mark_application_as_applied(
+    client, db
+):
+    application_id = uuid4()
+    document_id = uuid4()
+    candidate_id = uuid4()
+
+    application = SimpleNamespace(
+        id=application_id,
+        candidate_id=candidate_id,
+        job_id=uuid4(),
+        status="saved",
+        applied_at=None,
+    )
+
+    document = SimpleNamespace(
+        id=document_id,
+        application_id=application_id,
+        document_type="cover_letter",
+        version=1,
+        content_text="Dear Hiring Team...",
+        generation_metadata={},
+        is_approved=False,
+        approved_at=None,
+        created_at=datetime.now(timezone.utc),
+    )
+
+    # The endpoint calls db.scalar() first for the application,
+    # then for the document.
+    db.scalar = AsyncMock(side_effect=[application, document])
+
+    response = client.patch(
+        f"/api/applications/{application_id}/documents/"
+        f"{document_id}/approve",
+        params={"candidate_id": str(candidate_id)},
+    )
+
+    assert response.status_code == 200
+    result = response.json()
+
+    assert result["is_approved"] is True
+    assert result["approved_at"] is not None
+    assert result["document_type"] == "cover_letter"
+
+    # Approval must not mean that the application was submitted.
+    assert application.status == "saved"
+    assert application.applied_at is None
+
+    db.commit.assert_awaited_once()
+    db.refresh.assert_awaited_once_with(document)
+
+
+def test_generate_cover_letter_handles_ai_provider_failure(
+    client, db, monkeypatch
+):
+    candidate_id = uuid4()
+    job_id = uuid4()
+
+    candidate = make_candidate(id=candidate_id)
+    job = SimpleNamespace(
+        id=job_id,
+        company_id=None,
+        title="Backend Developer",
+        location="Remote",
+        employment_type="Full-time",
+        experience_level="Senior",
+        description="Build backend APIs using Python and PostgreSQL.",
+        is_active=True,
+    )
+
+    db.get.side_effect = [candidate, job]
+
+    async def failing_generate_text(**kwargs):
+        from backend.app.services.ai_provider import AIProviderError
+
+        raise AIProviderError("The AI provider is temporarily unavailable.")
+
+    monkeypatch.setattr(
+        applications_routes,
+        "generate_text",
+        failing_generate_text,
+    )
+
+    response = client.post(
+        "/api/applications/generate-cover-letter",
+        json={
+            "candidate_id": str(candidate_id),
+            "job_id": str(job_id),
+        },
+    )
+
+    assert response.status_code == 503
+    assert "temporarily unavailable" in response.json()["detail"]
+
+    # No application or document should be created after generation fails.
+    db.add.assert_not_called()
+    db.commit.assert_not_awaited()
+
+
+def test_update_application_to_applied_sets_applied_at(client, db):
+    application_id = uuid4()
+    candidate_id = uuid4()
+
+    application = SimpleNamespace(
+        id=application_id,
+        candidate_id=candidate_id,
+        job_id=uuid4(),
+        status="saved",
+        applied_at=None,
+        follow_up_at=None,
+        notes=None,
+        application_url=None,
+        submission_metadata=None,
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+
+    db.scalar = AsyncMock(return_value=application)
+
+    response = client.patch(
+        f"/api/applications/{application_id}",
+        params={"candidate_id": str(candidate_id)},
+        json={"status": "applied"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "applied"
+    assert application.applied_at is not None
+
+    db.commit.assert_awaited_once()
+    db.refresh.assert_awaited_once_with(application)
+
+
+def test_update_application_notes_preserves_status(client, db):
+    application_id = uuid4()
+    candidate_id = uuid4()
+
+    application = SimpleNamespace(
+        id=application_id,
+        candidate_id=candidate_id,
+        job_id=uuid4(),
+        status="saved",
+        applied_at=None,
+        follow_up_at=None,
+        notes=None,
+        application_url=None,
+        submission_metadata=None,
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+
+    db.scalar = AsyncMock(return_value=application)
+
+    response = client.patch(
+        f"/api/applications/{application_id}",
+        params={"candidate_id": str(candidate_id)},
+        json={"notes": "Follow up with the recruiter next week."},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "saved"
+    assert application.notes == "Follow up with the recruiter next week."
+    assert application.applied_at is None
+
+    db.commit.assert_awaited_once()
+    db.refresh.assert_awaited_once_with(application)
