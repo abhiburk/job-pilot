@@ -253,3 +253,74 @@ def test_parse_tailoring_response_accepts_empty_summary_and_warnings():
     assert parsed["tailored_resume"] == "Resume content"
     assert parsed["changes_summary"] == []
     assert parsed["warnings"] == []
+
+@pytest.mark.parametrize(
+    "resume, expected_warning",
+    [
+        (
+            "Backend engineer andcloud developer",
+            "Possible missing space: 'andcloud'.",
+        ),
+        (
+            "CRMplatform developer",
+            "Possible missing space: 'CRMplatform'.",
+        ),
+        (
+            "Other:REST APIs",
+            "Possible missing space: 'Other:REST'.",
+        ),
+    ],
+)
+def test_parse_tailoring_response_warns_about_formatting(
+    resume, expected_warning
+):
+    parsed = service._parse_tailoring_response(
+        make_tailoring_response(tailored_resume=resume)
+    )
+
+    assert expected_warning in parsed["warnings"]
+
+
+def test_parse_tailoring_response_preserves_original_content():
+    resume = "Backend engineer andcloud developer"
+
+    parsed = service._parse_tailoring_response(
+        make_tailoring_response(tailored_resume=resume)
+    )
+
+    # Flag the issue without silently rewriting the model output.
+    assert parsed["tailored_resume"] == resume
+    assert any("missing space" in warning for warning in parsed["warnings"])
+
+
+@pytest.mark.parametrize(
+    "resume",
+    [
+        "LinkedIn: string",
+        "GitHub: undefined",
+        "Email: null",
+        "-Developed a billing system",
+        "DevelopedeCommerce website",
+    ],
+)
+def test_parse_tailoring_response_flags_formatting_issues(resume):
+    parsed = service._parse_tailoring_response(
+        make_tailoring_response(tailored_resume=resume)
+    )
+
+    assert parsed["warnings"]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [None, "", "  ", "string", "undefined", "null", "N/A"],
+)
+def test_clean_profile_value_returns_none_for_placeholders(value):
+    assert service._clean_profile_value(value) is None
+
+
+def test_clean_profile_value_preserves_real_values():
+    assert (
+        service._clean_profile_value(" https://github.com/example ")
+        == "https://github.com/example"
+    )

@@ -504,7 +504,7 @@ def build_match_explanation(
 
     details = [f"{label}: {score:.2f}/100."]
 
-    if not candidate_skills:
+    if not candidate_skills and not matched:
         details.append("No recognized technical skills were identified.")
     else:
         title_matches = matched & title_skills
