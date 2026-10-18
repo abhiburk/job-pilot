@@ -1,10 +1,13 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 
 from backend.app.services import email_service, job_digest
+from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
+from backend.app.services import job_digest
 
 def test_build_digest_email_includes_job_details():
     match = SimpleNamespace(score=88.5)
@@ -98,3 +101,162 @@ async def test_send_email_propagates_smtp_failure(monkeypatch):
             subject="Test",
             text_body="Test message",
         )
+
+
+@pytest.mark.asyncio
+async def test_send_candidate_digest_no_jobs_sends_nothing(monkeypatch):
+    db = MagicMock()
+    db.execute = AsyncMock(
+        return_value=SimpleNamespace(all=lambda: [])
+    )
+    db.commit = AsyncMock()
+    db.add_all = MagicMock()
+
+    send_email = AsyncMock()
+    monkeypatch.setattr(job_digest, "send_email", send_email)
+
+    candidate = SimpleNamespace(
+        id="candidate-1",
+        email="candidate@example.com",
+    )
+
+    result = await job_digest.send_candidate_digest(db, candidate)
+
+    assert result == 0
+    send_email.assert_not_awaited()
+    db.add_all.assert_not_called()
+    db.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_send_candidate_digest_records_delivery_after_success(
+    monkeypatch,
+):
+    db = MagicMock()
+    db.execute = AsyncMock()
+    db.commit = AsyncMock()
+    db.add_all = MagicMock()
+
+    match = SimpleNamespace(
+        score=90,
+        score_coverage=95,
+        strengths=["Matching skill: Laravel"],
+        gaps=[],
+        explanation="Strong skills match",
+    )
+    job = SimpleNamespace(
+        id="job-1",
+        title="Senior Laravel Developer",
+        location="Remote",
+        job_url="https://example.com/jobs/1",
+        is_active=True,
+        posted_at=None,
+    )
+    db.execute.return_value = SimpleNamespace(
+        all=lambda: [(match, job, "Example Inc")]
+    )
+
+    send_email = AsyncMock()
+    monkeypatch.setattr(job_digest, "send_email", send_email)
+
+    candidate = SimpleNamespace(
+        id="candidate-1",
+        email="candidate@example.com",
+    )
+
+    result = await job_digest.send_candidate_digest(db, candidate)
+
+    assert result == 1
+    send_email.assert_awaited_once()
+    db.add_all.assert_called_once()
+    db.commit.assert_awaited_once()
+
+    deliveries = db.add_all.call_args.args[0]
+    assert len(deliveries) == 1
+    assert deliveries[0].candidate_id == candidate.id
+    assert deliveries[0].job_id == job.id
+
+
+@pytest.mark.asyncio
+async def test_send_candidate_digest_smtp_failure_records_nothing(
+    monkeypatch,
+):
+    db = MagicMock()
+    db.execute = AsyncMock()
+    db.commit = AsyncMock()
+    db.add_all = MagicMock()
+
+    match = SimpleNamespace(
+        score=90,
+        score_coverage=95,
+        strengths=[],
+        gaps=[],
+        explanation="",
+    )
+    job = SimpleNamespace(
+        id="job-1",
+        title="Laravel Developer",
+        location="Remote",
+        job_url="https://example.com/jobs/1",
+        posted_at=None,
+    )
+    db.execute.return_value = SimpleNamespace(
+        all=lambda: [(match, job, "Example Inc")]
+    )
+
+    async def fail_email(**kwargs):
+        raise OSError("SMTP unavailable")
+
+    monkeypatch.setattr(job_digest, "send_email", fail_email)
+
+    candidate = SimpleNamespace(
+        id="candidate-1",
+        email="candidate@example.com",
+    )
+
+    with pytest.raises(OSError, match="SMTP unavailable"):
+        await job_digest.send_candidate_digest(db, candidate)
+
+    db.add_all.assert_not_called()
+    db.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_daily_digest_continues_after_candidate_failure(monkeypatch):
+    first = SimpleNamespace(id="candidate-1")
+    second = SimpleNamespace(id="candidate-2")
+
+    db = MagicMock()
+    db.execute = AsyncMock(
+        return_value=SimpleNamespace(
+            scalars=lambda: SimpleNamespace(all=lambda: [first, second])
+        )
+    )
+    db.rollback = AsyncMock()
+
+    processed = []
+
+    async def fake_send_candidate_digest(db, candidate):
+        processed.append(candidate.id)
+
+        if candidate.id == first.id:
+            raise OSError("SMTP unavailable")
+
+        return 2
+
+    monkeypatch.setattr(
+        job_digest,
+        "send_candidate_digest",
+        fake_send_candidate_digest,
+    )
+
+    result = await job_digest.send_daily_job_digests(db)
+
+    assert processed == ["candidate-1", "candidate-2"]
+    assert result == {
+        "candidates_checked": 2,
+        "candidates_emailed": 1,
+        "jobs_emailed": 2,
+        "failed_candidates": 1,
+    }
+    db.rollback.assert_awaited_once()

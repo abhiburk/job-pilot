@@ -2,6 +2,9 @@ from email.message import EmailMessage
 from html import escape
 import aiosmtplib
 from backend.app.core.config import settings
+import logging
+
+logger = logging.getLogger(__name__)
 
 async def send_email(
     *,
@@ -39,11 +42,10 @@ async def send_email(
             validate_certs=False,
             timeout=30,
         )
-        print("Email sent successfully!")
+        logger.info("Email sent successfully to %s", to_email)
     except Exception:
-        print("Failed to send email to %s", to_email)
+        logger.exception("Failed to send email to %s", to_email)
         raise
-
 
 def escape_html(value: object | None) -> str:
     return escape(str(value or ""))

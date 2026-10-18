@@ -452,6 +452,7 @@ class JobFeedback(Base):
     reason: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = created_at_column()
 
+
 class JobDigestDelivery(Base):
     __tablename__ = "job_digest_deliveries"
 
@@ -463,19 +464,22 @@ class JobDigestDelivery(Base):
         ),
     )
 
-    # Fixed: Added Mapped[int] type annotation
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    
-    candidate_id: Mapped[int] = mapped_column(
+    id: Mapped[uuid.UUID] = uuid_pk()
+
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
         ForeignKey("candidates.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
-    job_id: Mapped[int] = mapped_column(
+
+    job_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
         ForeignKey("jobs.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
+
     sent_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
