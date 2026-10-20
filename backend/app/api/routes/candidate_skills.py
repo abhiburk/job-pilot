@@ -8,8 +8,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from backend.app.api.deps import get_current_user, get_owned_candidate
 from backend.app.core.database import get_db
-from backend.app.models import Candidate, CandidateSkill, Skill
+from backend.app.models import Candidate, CandidateSkill, Skill, User
 from backend.app.schemas.candidate_skill import (
     CandidateSkillCreate,
     CandidateSkillRead,
@@ -19,22 +20,16 @@ from backend.app.schemas.candidate_skill import (
 router = APIRouter(
     prefix="/api/candidates/{candidate_id}/skills",
     tags=["Candidate Skills"],
+    dependencies=[Depends(get_current_user)],
 )
 
 
 async def get_candidate_or_404(
     db: AsyncSession,
     candidate_id: UUID,
+    user: User,
 ) -> Candidate:
-    candidate = await db.get(Candidate, candidate_id)
-
-    if candidate is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Candidate not found",
-        )
-
-    return candidate
+    return await get_owned_candidate(db, candidate_id, user)
 
 
 def serialize_candidate_skill(
@@ -60,8 +55,9 @@ async def add_candidate_skill(
     candidate_id: UUID,
     payload: CandidateSkillCreate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    await get_candidate_or_404(db, candidate_id)
+    await get_candidate_or_404(db, candidate_id, current_user)
 
     name = payload.name.strip()
     if not name:
@@ -134,8 +130,9 @@ async def add_candidate_skill(
 async def list_candidate_skills(
     candidate_id: UUID,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    await get_candidate_or_404(db, candidate_id)
+    await get_candidate_or_404(db, candidate_id, current_user)
 
     result = await db.execute(
         select(CandidateSkill)
@@ -160,8 +157,9 @@ async def update_candidate_skill(
     skill_id: UUID,
     payload: CandidateSkillUpdate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    await get_candidate_or_404(db, candidate_id)
+    await get_candidate_or_404(db, candidate_id, current_user)
 
     result = await db.execute(
         select(CandidateSkill)
@@ -204,8 +202,9 @@ async def remove_candidate_skill(
     candidate_id: UUID,
     skill_id: UUID,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    await get_candidate_or_404(db, candidate_id)
+    await get_candidate_or_404(db, candidate_id, current_user)
 
     result = await db.execute(
         select(CandidateSkill).where(

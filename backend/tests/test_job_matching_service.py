@@ -241,3 +241,45 @@ def test_unrelated_role_score_is_capped():
     score = min(score, Decimal("20.00"))
 
     assert score == Decimal("20.00")
+
+@pytest.mark.asyncio
+async def test_match_jobs_falls_back_to_rules_when_job_embedding_fails():
+    from backend.app.services.embedding_provider import EmbeddingProviderError
+
+    candidate = make_candidate()
+    first_job = make_job()
+    second_job = make_job()
+
+    db = SimpleNamespace(
+        get=AsyncMock(return_value=candidate),
+        execute=AsyncMock(
+            side_effect=[
+                mock_result([]),                        # Candidate skills
+                mock_result([first_job, second_job]),   # Active jobs
+                MagicMock(),                            # Upsert job 1
+                MagicMock(),                            # Upsert job 2
+            ]
+        ),
+        commit=AsyncMock(),
+        rollback=AsyncMock(),
+    )
+
+    with patch(
+        "backend.app.services.job_matching.EmbeddingService"
+    ) as mock_embedding_service:
+        get_embedding = AsyncMock(
+            side_effect=[
+                [0.1, 0.2, 0.3],  # Candidate embedding
+                EmbeddingProviderError("Gemini failed to generate an embedding"),
+            ]
+        )
+        mock_embedding_service.return_value.get_embedding = get_embedding
+        mock_embedding_service.return_value.close = AsyncMock()
+
+        result = await match_jobs(db, candidate.id)
+
+    assert result["jobs_processed"] == 2
+    db.commit.assert_awaited_once()
+    db.rollback.assert_not_awaited()
+    # No further provider calls after the first failure.
+    assert get_embedding.await_count == 2

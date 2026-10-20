@@ -4,8 +4,9 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.api.deps import get_current_user, get_owned_candidate
 from backend.app.core.database import get_db
-from backend.app.models import Candidate
+from backend.app.models import User
 from backend.app.services.resume_parser import (
     MAX_RESUME_SIZE,
     extract_resume_text,
@@ -18,6 +19,7 @@ from backend.app.services.job_matching import match_jobs
 router = APIRouter(
     prefix="/api/candidates/{candidate_id}/resume",
     tags=["Resumes"],
+    dependencies=[Depends(get_current_user)],
 )
 
 CHUNK_SIZE = 64 * 1024
@@ -27,15 +29,10 @@ CHUNK_SIZE = 64 * 1024
 async def upload_resume(
     candidate_id: UUID,
     file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    candidate = await db.get(Candidate, candidate_id)
-
-    if candidate is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Candidate not found",
-        )
+    candidate = await get_owned_candidate(db, candidate_id, current_user)
 
     filename = file.filename or ""
 

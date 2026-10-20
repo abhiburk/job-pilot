@@ -16,7 +16,10 @@ from backend.app.models.entities import (
     Skill,
     JobDigestDelivery,
     JobAIAnalysis,
-    TextEmbedding
+    TextEmbedding,
+    User,
+    UserSession,
+    PasswordResetToken,
 )
 
 __all__ = [
@@ -36,5 +39,8 @@ __all__ = [
     "Skill",
     "JobDigestDelivery",
     "JobAIAnalysis",
-    "TextEmbedding"
+    "TextEmbedding",
+    "User",
+    "UserSession",
+    "PasswordResetToken",
 ]

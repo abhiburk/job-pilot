@@ -5,15 +5,41 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.api.deps import get_current_user, get_owned_candidate
 from backend.app.core.database import get_db
-from backend.app.models import Candidate
+from backend.app.models import Candidate, User
 from backend.app.schemas.candidate import (
     CandidateCreate,
     CandidateRead,
     CandidateUpdate,
 )
 
-router = APIRouter(prefix="/api/candidates", tags=["Candidates"])
+router = APIRouter(
+    prefix="/api/candidates",
+    tags=["Candidates"],
+    dependencies=[Depends(get_current_user)],
+)
+
+
+@router.get(
+    "/me",
+    response_model=CandidateRead,
+)
+async def get_my_candidate(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    candidate = await db.scalar(
+        select(Candidate).where(Candidate.user_id == current_user.id)
+    )
+
+    if candidate is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Candidate profile not created yet",
+        )
+
+    return candidate
 
 
 @router.get(
@@ -22,17 +48,10 @@ router = APIRouter(prefix="/api/candidates", tags=["Candidates"])
 )
 async def get_candidate(
     candidate_id: UUID,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    candidate = await db.get(Candidate, candidate_id)
-
-    if candidate is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Candidate not found",
-        )
-
-    return candidate
+    return await get_owned_candidate(db, candidate_id, current_user)
 
 
 @router.patch(
@@ -42,15 +61,10 @@ async def get_candidate(
 async def update_candidate(
     candidate_id: UUID,
     payload: CandidateUpdate,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    candidate = await db.get(Candidate, candidate_id)
-
-    if candidate is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Candidate not found",
-        )
+    candidate = await get_owned_candidate(db, candidate_id, current_user)
 
     changes = payload.model_dump(exclude_unset=True)
 
@@ -86,9 +100,19 @@ async def update_candidate(
 )
 async def create_candidate(
     payload: CandidateCreate,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    candidate = Candidate(**payload.model_dump())
+    existing = await db.scalar(
+        select(Candidate.id).where(Candidate.user_id == current_user.id)
+    )
+    if existing is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This account already has a candidate profile.",
+        )
+
+    candidate = Candidate(**payload.model_dump(), user_id=current_user.id)
     db.add(candidate)
 
     try:

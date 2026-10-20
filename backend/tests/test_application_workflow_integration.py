@@ -25,7 +25,7 @@ from backend.app.services.resume_tailoring import tailor_resume_for_job
 
 
 @pytest.mark.asyncio
-async def test_complete_application_preparation_workflow(test_db):
+async def test_complete_application_preparation_workflow(test_db, test_user):
     # Arrange: create a candidate and an eligible job in PostgreSQL.
     candidate = Candidate(
         full_name="Integration Test Candidate",
@@ -38,6 +38,7 @@ async def test_complete_application_preparation_workflow(test_db):
         ),
         years_experience=8,
         salary_currency="INR",
+        user_id=test_user.id,
     )
 
     job = Job(
@@ -113,6 +114,7 @@ async def test_complete_application_preparation_workflow(test_db):
                 candidate_id=candidate.id,
                 job_id=job.id,
             ),
+            current_user=test_user,
             db=test_db,
         )
 
@@ -170,6 +172,7 @@ async def test_complete_application_preparation_workflow(test_db):
             follow_up_at=follow_up_at,
         ),
         candidate_id=candidate.id,
+        current_user=test_user,
         db=test_db,
     )
 

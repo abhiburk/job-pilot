@@ -6,6 +6,7 @@ import pytest
 from docx import Document
 from httpx import ASGITransport, AsyncClient
 
+from backend.app.api.deps import get_current_user
 from backend.app.core.database import get_db
 from backend.app.main import app
 from backend.app.models import Candidate
@@ -21,11 +22,12 @@ def make_docx(text: str) -> bytes:
 
 
 @pytest.mark.asyncio
-async def test_resume_upload_success(test_db):
+async def test_resume_upload_success(test_db, test_user):
     candidate = Candidate(
         full_name="Resume Upload Test",
         email="resume-upload@example.com",
         salary_currency="INR",
+        user_id=test_user.id,
     )
     test_db.add(candidate)
     await test_db.commit()
@@ -35,6 +37,7 @@ async def test_resume_upload_success(test_db):
         yield test_db
 
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_current_user] = lambda: test_user
 
     try:
         transport = ASGITransport(app=app)
@@ -63,14 +66,16 @@ async def test_resume_upload_success(test_db):
 
     finally:
         app.dependency_overrides.pop(get_db, None)
+        app.dependency_overrides.pop(get_current_user, None)
 
 
 @pytest.mark.asyncio
-async def test_resume_upload_rejects_unsupported_file(test_db):
+async def test_resume_upload_rejects_unsupported_file(test_db, test_user):
     candidate = Candidate(
         full_name="Invalid Resume Test",
         email="invalid-resume@example.com",
         salary_currency="INR",
+        user_id=test_user.id,
     )
     test_db.add(candidate)
     await test_db.commit()
@@ -80,6 +85,7 @@ async def test_resume_upload_rejects_unsupported_file(test_db):
         yield test_db
 
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_current_user] = lambda: test_user
 
     try:
         transport = ASGITransport(app=app)
@@ -104,14 +110,16 @@ async def test_resume_upload_rejects_unsupported_file(test_db):
 
     finally:
         app.dependency_overrides.pop(get_db, None)
+        app.dependency_overrides.pop(get_current_user, None)
 
 
 @pytest.mark.asyncio
-async def test_resume_upload_rejects_oversized_file(test_db):
+async def test_resume_upload_rejects_oversized_file(test_db, test_user):
     candidate = Candidate(
         full_name="Oversized Resume Test",
         email="oversized-resume@example.com",
         salary_currency="INR",
+        user_id=test_user.id,
     )
     test_db.add(candidate)
     await test_db.commit()
@@ -121,6 +129,7 @@ async def test_resume_upload_rejects_oversized_file(test_db):
         yield test_db
 
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_current_user] = lambda: test_user
 
     try:
         transport = ASGITransport(app=app)
@@ -144,14 +153,16 @@ async def test_resume_upload_rejects_oversized_file(test_db):
 
     finally:
         app.dependency_overrides.pop(get_db, None)
+        app.dependency_overrides.pop(get_current_user, None)
 
 
 @pytest.mark.asyncio
-async def test_resume_upload_missing_candidate(test_db):
+async def test_resume_upload_missing_candidate(test_db, test_user):
     async def override_get_db():
         yield test_db
 
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_current_user] = lambda: test_user
 
     try:
         transport = ASGITransport(app=app)
@@ -175,3 +186,4 @@ async def test_resume_upload_missing_candidate(test_db):
 
     finally:
         app.dependency_overrides.pop(get_db, None)
+        app.dependency_overrides.pop(get_current_user, None)

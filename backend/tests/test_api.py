@@ -17,6 +17,12 @@ from backend.app.models import Candidate
 from backend.app.api.routes import applications as applications_routes
 from backend.app.models import Application, ApplicationDocument
 from backend.app.models import Company, Job
+from backend.app.api.deps import get_current_user
+
+# Every private route requires a signed-in user; these API tests run as this
+# user and their candidates belong to it. Auth itself is covered in
+# test_auth.py and test_authorization.py.
+TEST_USER = SimpleNamespace(id=uuid4(), email="owner@example.com", is_active=True)
 
 @pytest.fixture
 def db():
@@ -26,6 +32,7 @@ def db():
     session.commit = AsyncMock()
     session.refresh = AsyncMock()
     session.rollback = AsyncMock()
+    session.scalar = AsyncMock(return_value=None)
 
     
     def add_candidate(instance):
@@ -51,6 +58,7 @@ def client(db):
         yield db
 
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_current_user] = lambda: TEST_USER
 
     with TestClient(app) as test_client:
         yield test_client
@@ -63,6 +71,7 @@ def make_candidate(**overrides):
 
     values = {
         "id": uuid4(),
+        "user_id": TEST_USER.id,
         "full_name": "Test Candidate",
         "email": "candidate@example.com",
         "phone": None,
@@ -192,6 +201,7 @@ def test_patch_candidate_rejects_null_full_name(client, db):
 
 def test_run_matching_returns_result(client, db, monkeypatch):
     candidate_id = uuid4()
+    db.get.return_value = make_candidate(id=candidate_id)
 
     async def fake_match_jobs(session, requested_candidate_id):
         assert session is db
@@ -309,6 +319,7 @@ DashboardRow = namedtuple(
         "preference_score",
         "role_relevance_score",
         "salary_score",
+        "score_coverage",
         "strengths",
         "gaps",
         "explanation",
@@ -349,6 +360,7 @@ def make_dashboard_row(job=None, **overrides):
         "experience_score": Decimal("80.00"),
         "preference_score": Decimal("75.00"),
         "role_relevance_score": Decimal("88.00"),
+        "score_coverage": Decimal("100.00"),
         "salary_score": Decimal("70.00"),
         "strengths": ["Matching skill: Laravel"],
         "gaps": ["Missing skill: Kubernetes"],
@@ -816,6 +828,7 @@ def test_approve_document_does_not_mark_application_as_applied(
     application_id = uuid4()
     document_id = uuid4()
     candidate_id = uuid4()
+    db.get.return_value = make_candidate(id=candidate_id)
 
     application = SimpleNamespace(
         id=application_id,
@@ -912,6 +925,7 @@ def test_generate_cover_letter_handles_ai_provider_failure(
 def test_update_application_to_applied_sets_applied_at(client, db):
     application_id = uuid4()
     candidate_id = uuid4()
+    db.get.return_value = make_candidate(id=candidate_id)
 
     application = SimpleNamespace(
         id=application_id,
@@ -946,6 +960,7 @@ def test_update_application_to_applied_sets_applied_at(client, db):
 def test_update_application_notes_preserves_status(client, db):
     application_id = uuid4()
     candidate_id = uuid4()
+    db.get.return_value = make_candidate(id=candidate_id)
 
     application = SimpleNamespace(
         id=application_id,

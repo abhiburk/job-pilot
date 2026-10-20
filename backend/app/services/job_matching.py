@@ -660,12 +660,24 @@ async def match_jobs(
             if candidate_embedding is not None:
                 job_text = build_job_embedding_text(job)
 
+                job_embedding = None
                 if job_text:
-                    job_embedding = await embedding_service.get_embedding(
-                        db,
-                        job_text,
-                    )
+                    try:
+                        job_embedding = await embedding_service.get_embedding(
+                            db,
+                            job_text,
+                        )
+                    except EmbeddingProviderError:
+                        # Same fallback as for the candidate embedding: keep
+                        # rule-based scoring and stop calling the provider
+                        # for the rest of this run (e.g. quota exhausted).
+                        logger.warning(
+                            "Embedding provider unavailable; continuing "
+                            "with rule-based role relevance"
+                        )
+                        candidate_embedding = None
 
+                if job_embedding is not None:
                     similarity = cosine_similarity(
                         candidate_embedding,
                         job_embedding,

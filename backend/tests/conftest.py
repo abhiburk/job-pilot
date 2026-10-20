@@ -10,6 +10,8 @@ from sqlalchemy.ext.asyncio import (
 
 from backend.app.core.database import Base
 from backend.app import models  # noqa: F401
+from backend.app.models import User
+from backend.app.services.auth import hash_password, login_rate_limiter
 
 
 @pytest_asyncio.fixture
@@ -47,3 +49,24 @@ async def test_db():
             await connection.run_sync(Base.metadata.drop_all)
 
         await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def test_user(test_db):
+    """A persisted account that owns the candidates created in a test."""
+    user = User(
+        email="owner@example.com",
+        full_name="Test Owner",
+        password_hash=hash_password("correct horse battery"),
+    )
+    test_db.add(user)
+    await test_db.commit()
+    await test_db.refresh(user)
+    return user
+
+
+@pytest.fixture(autouse=True)
+def reset_login_rate_limiter():
+    login_rate_limiter.clear()
+    yield
+    login_rate_limiter.clear()

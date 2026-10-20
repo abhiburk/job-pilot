@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.api.deps import get_current_user, get_owned_candidate
 from backend.app.core.database import get_db
 from backend.app.services.job_ingestion import (
     discover_and_save_freehire_jobs,
@@ -22,10 +23,112 @@ from uuid import UUID
 from fastapi import HTTPException
 from backend.app.services.job_ai_analysis import (
     JobAIAnalysisError,
+    _serialize_analysis,
     analyze_job_for_candidate,
 )
+from backend.app.models import JobAIAnalysis, User
+from backend.app.schemas.discovery import DiscoveryRequest
+from backend.app.services.job_discovery import (
+    UnknownSourceError,
+    latest_runs,
+    next_available_at,
+    run_discovery,
+)
+from backend.app.services.job_sources import DiscoveryQuery, all_sources, is_enabled
 
-router = APIRouter(prefix="/api/jobs", tags=["Jobs"])
+router = APIRouter(
+    prefix="/api/jobs",
+    tags=["Jobs"],
+    dependencies=[Depends(get_current_user)],
+)
+
+
+def _job_query(match_join):
+    return (
+        select(
+            Job,
+            Company.name.label("company_name"),
+            JobMatch.score.label("match_score"),
+            JobMatch.skills_score,
+            JobMatch.experience_score,
+            JobMatch.preference_score,
+            JobMatch.role_relevance_score,
+            JobMatch.salary_score,
+            JobMatch.score_coverage,
+            JobMatch.strengths,
+            JobMatch.gaps,
+            JobMatch.explanation,
+        )
+        .outerjoin(Company, Job.company_id == Company.id)
+        .outerjoin(JobMatch, match_join)
+    )
+
+
+def _serialize_job_row(row) -> dict:
+    job = row[0]
+
+    return {
+        "id": str(job.id),
+        "title": job.title,
+        "company_id": str(job.company_id) if job.company_id else None,
+        "company_name": row.company_name,
+        "description": job.description,
+        "location": job.location,
+        "remote_type": job.remote_type,
+        "employment_type": job.employment_type,
+        "experience_level": job.experience_level,
+        "salary_min": (
+            float(job.salary_min)
+            if job.salary_min is not None
+            else None
+        ),
+        "salary_max": (
+            float(job.salary_max)
+            if job.salary_max is not None
+            else None
+        ),
+        "salary_currency": job.salary_currency,
+        "job_url": job.job_url,
+        "source": job.source,
+        "is_active": job.is_active,
+        "posted_at": job.posted_at,
+        "discovered_at": job.discovered_at,
+        "match_score": (
+            float(row.match_score)
+            if row.match_score is not None
+            else None
+        ),
+        "score_coverage": (
+            float(row.score_coverage)
+            if row.score_coverage is not None
+            else None
+        ),
+        "match_breakdown": {
+            "skills": (
+                float(row.skills_score)
+                if row.skills_score is not None else None
+            ),
+            "experience": (
+                float(row.experience_score)
+                if row.experience_score is not None else None
+            ),
+            "preferences": (
+                float(row.preference_score)
+                if row.preference_score is not None else None
+            ),
+            "role_relevance": (
+                float(row.role_relevance_score)
+                if row.role_relevance_score is not None else None
+            ),
+            "salary": (
+                float(row.salary_score)
+                if row.salary_score is not None else None
+            ),
+        },
+        "strengths": row.strengths or [],
+        "gaps": row.gaps or [],
+        "explanation": row.explanation,
+    }
 
 
 @router.get("")
@@ -39,6 +142,7 @@ async def list_jobs(
     ),
     experience_level: str | None = Query(default=None, max_length=100),
     employment_type: str | None = Query(default=None, max_length=50),
+    source: str | None = Query(default=None, max_length=100),
     min_score: float | None = Query(default=None, ge=0, le=100),
     sort_by: str = Query(
         default="newest",
@@ -46,6 +150,7 @@ async def list_jobs(
     ),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """List active jobs with optional search, filters, and candidate ranking."""
@@ -57,12 +162,7 @@ async def list_jobs(
         )
 
     if candidate_id is not None:
-        candidate = await db.get(Candidate, candidate_id)
-        if candidate is None:
-            raise HTTPException(
-                status_code=404,
-                detail="Candidate not found",
-            )
+        await get_owned_candidate(db, candidate_id, current_user)
 
     match_join = and_(
         JobMatch.job_id == Job.id,
@@ -97,6 +197,9 @@ async def list_jobs(
             Job.employment_type.ilike(f"%{employment_type.strip()}%")
         )
 
+    if source:
+        filters.append(Job.source == source.strip().lower())
+
     if min_score is not None:
         filters.append(JobMatch.score >= min_score)
 
@@ -111,24 +214,7 @@ async def list_jobs(
     total = await db.scalar(count_query)
 
     # Fetch the requested page.
-    query = (
-        select(
-            Job,
-            Company.name.label("company_name"),
-            JobMatch.score.label("match_score"),
-            JobMatch.skills_score,
-            JobMatch.experience_score,
-            JobMatch.preference_score,
-            JobMatch.role_relevance_score,
-            JobMatch.salary_score,
-            JobMatch.strengths,
-            JobMatch.gaps,
-            JobMatch.explanation,
-        )
-        .outerjoin(Company, Job.company_id == Company.id)
-        .outerjoin(JobMatch, match_join)
-        .where(*filters)
-    )
+    query = _job_query(match_join).where(*filters)
 
     if sort_by == "match_score":
         query = query.order_by(
@@ -152,69 +238,7 @@ async def list_jobs(
         )
 
     result = await db.execute(query.limit(limit).offset(offset))
-
-    items = []
-    for row in result.all():
-        job = row[0]
-
-        items.append(
-            {
-                "id": str(job.id),
-                "title": job.title,
-                "company_id": str(job.company_id) if job.company_id else None,
-                "company_name": row.company_name,
-                "description": job.description,
-                "location": job.location,
-                "remote_type": job.remote_type,
-                "employment_type": job.employment_type,
-                "experience_level": job.experience_level,
-                "salary_min": (
-                    float(job.salary_min)
-                    if job.salary_min is not None
-                    else None
-                ),
-                "salary_max": (
-                    float(job.salary_max)
-                    if job.salary_max is not None
-                    else None
-                ),
-                "salary_currency": job.salary_currency,
-                "job_url": job.job_url,
-                "source": job.source,
-                "posted_at": job.posted_at,
-                "discovered_at": job.discovered_at,
-                "match_score": (
-                    float(row.match_score)
-                    if row.match_score is not None
-                    else None
-                ),
-                "match_breakdown": {
-                    "skills": (
-                        float(row.skills_score)
-                        if row.skills_score is not None else None
-                    ),
-                    "experience": (
-                        float(row.experience_score)
-                        if row.experience_score is not None else None
-                    ),
-                    "preferences": (
-                        float(row.preference_score)
-                        if row.preference_score is not None else None
-                    ),
-                    "role_relevance": (
-                        float(row.role_relevance_score)
-                        if row.role_relevance_score is not None else None
-                    ),
-                    "salary": (
-                        float(row.salary_score)
-                        if row.salary_score is not None else None
-                    ),
-                },
-                "strengths": row.strengths or [],
-                "gaps": row.gaps or [],
-                "explanation": row.explanation,
-            }
-        )
+    items = [_serialize_job_row(row) for row in result.all()]
 
     return {
         "items": items,
@@ -231,6 +255,7 @@ async def list_jobs(
             "remote_type": remote_type,
             "experience_level": experience_level,
             "employment_type": employment_type,
+            "source": source,
             "min_score": min_score,
             "sort_by": sort_by,
         },
@@ -239,8 +264,11 @@ async def list_jobs(
 @router.post("/match/{candidate_id}")
 async def run_job_matching(
     candidate_id: UUID,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    await get_owned_candidate(db, candidate_id, current_user)
+
     try:
         return await match_jobs(db, candidate_id)
     except ValueError as exc:
@@ -251,12 +279,10 @@ async def run_job_matching(
 async def get_job_matches(
     candidate_id: UUID,
     limit: int = Query(default=20, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    candidate = await db.get(Candidate, candidate_id)
-
-    if candidate is None:
-        raise HTTPException(status_code=404, detail="Candidate not found")
+    candidate = await get_owned_candidate(db, candidate_id, current_user)
 
     query = (
         select(JobMatch, Job, Company.name.label("company_name"))
@@ -268,8 +294,6 @@ async def get_job_matches(
     )
 
     result = await db.execute(query)
-
-    candidate = await db.get(Candidate, candidate_id)
 
     return [
         {
@@ -357,7 +381,57 @@ async def get_job_matches(
         for match, job, company_name in result.all()
     ]
 
-@router.post("/discover")
+@router.get("/sources")
+async def list_job_sources(db: AsyncSession = Depends(get_db)):
+    """Registered job providers with their limits and latest run."""
+    runs = await latest_runs(db)
+    items = []
+    for source in all_sources():
+        run = runs.get(source.key)
+        available_at = await next_available_at(db, source)
+        items.append(
+            {
+                **source.describe(),
+                "enabled": is_enabled(source),
+                "next_available_at": available_at,
+                "last_run": (
+                    {
+                        "status": run.status,
+                        "started_at": run.started_at,
+                        "finished_at": run.finished_at,
+                        "created": (run.output_data or {}).get("created"),
+                    }
+                    if run
+                    else None
+                ),
+            }
+        )
+    return items
+
+
+@router.post("/discovery")
+async def discover_from_sources(
+    payload: DiscoveryRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Search every enabled job source (or the selected ones) at once.
+
+    One source failing or being rate-limited does not affect the others;
+    the response reports the outcome for each source.
+    """
+    query = DiscoveryQuery(
+        keywords=payload.keywords,
+        country=payload.country,
+        work_mode=payload.work_mode,
+        limit=payload.limit,
+    )
+    try:
+        return await run_discovery(db, query, payload.sources)
+    except UnknownSourceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/discover", deprecated=True)
 async def discover_jobs(
     count: int = Query(default=20, ge=1, le=50),
     tag: str | None = Query(default=None, min_length=3, max_length=50),
@@ -382,7 +456,7 @@ async def discover_jobs(
             detail="Unable to save discovered jobs.",
         ) from exc
 
-@router.post("/discover/freehire")
+@router.post("/discover/freehire", deprecated=True)
 async def discover_freehire_jobs(
     query: str = Query(
         default="Laravel PHP Python",
@@ -428,8 +502,11 @@ async def analyze_job(
     job_id: UUID,
     candidate_id: UUID,
     force: bool = False,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    await get_owned_candidate(db, candidate_id, current_user)
+
     try:
         return await analyze_job_for_candidate(
             db=db,
@@ -453,3 +530,72 @@ async def analyze_job(
             status_code=503,
             detail=str(exc),
         ) from exc
+
+
+@router.get("/{job_id}")
+async def get_job(
+    job_id: UUID,
+    candidate_id: UUID | None = Query(default=None),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return one job, including inactive ones, with optional match data."""
+    candidate = None
+    if candidate_id is not None:
+        candidate = await get_owned_candidate(db, candidate_id, current_user)
+
+    match_join = and_(
+        JobMatch.job_id == Job.id,
+        JobMatch.candidate_id == candidate_id,
+    )
+    result = await db.execute(_job_query(match_join).where(Job.id == job_id))
+    row = result.first()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    item = _serialize_job_row(row)
+    job = row[0]
+    item["confidence_score"] = (
+        calculate_match_confidence(
+            job_title=job.title,
+            job_description=job.description,
+            job_location=job.location,
+            job_experience_level=job.experience_level,
+            job_salary_min=job.salary_min,
+            job_salary_max=job.salary_max,
+            candidate_resume_text=candidate.resume_text,
+        )
+        if candidate is not None
+        else None
+    )
+    return item
+
+
+@router.get("/{job_id}/analysis/{candidate_id}")
+async def get_job_analysis(
+    job_id: UUID,
+    candidate_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the stored AI analysis without calling the AI provider."""
+    await get_owned_candidate(db, candidate_id, current_user)
+
+    analysis = await db.scalar(
+        select(JobAIAnalysis).where(
+            JobAIAnalysis.candidate_id == candidate_id,
+            JobAIAnalysis.job_id == job_id,
+        )
+    )
+
+    if analysis is None:
+        return {"analysis": None}
+
+    serialized = _serialize_analysis(analysis)
+    serialized["error_message"] = (
+        "The last analysis attempt failed. You can retry."
+        if analysis.status == "failed"
+        else None
+    )
+    return {"analysis": serialized}

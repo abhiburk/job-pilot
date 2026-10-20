@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.api.deps import get_current_user, get_owned_candidate
 from backend.app.core.database import get_db
 from backend.app.models import Application, Candidate, Company, Job
 from backend.app.schemas.application import (
@@ -29,7 +30,13 @@ from backend.app.services.resume_tailoring import (
     tailor_resume_for_job,
 )
 
-router = APIRouter(prefix="/api/applications", tags=["Applications"])
+from backend.app.models import User
+
+router = APIRouter(
+    prefix="/api/applications",
+    tags=["Applications"],
+    dependencies=[Depends(get_current_user)],
+)
 
 
 @router.post(
@@ -39,11 +46,10 @@ router = APIRouter(prefix="/api/applications", tags=["Applications"])
 )
 async def create_application(
     payload: ApplicationCreate,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    candidate = await db.get(Candidate, payload.candidate_id)
-    if candidate is None:
-        raise HTTPException(status_code=404, detail="Candidate not found")
+    await get_owned_candidate(db, payload.candidate_id, current_user)
 
     job = await db.get(Job, payload.job_id)
     if job is None:
@@ -86,10 +92,10 @@ async def list_applications(
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     application_status: str | None = Query(default=None, alias="status"),
+    job_id: UUID | None = Query(default=None),
+    current_user: User = Depends(get_current_user),
 ):
-    candidate = await db.get(Candidate, candidate_id)
-    if candidate is None:
-        raise HTTPException(status_code=404, detail="Candidate not found")
+    await get_owned_candidate(db, candidate_id, current_user)
 
     statement = (
         select(Application, Job, Company.name)
@@ -108,47 +114,50 @@ async def list_applications(
             raise HTTPException(status_code=422, detail="Invalid application status")
         statement = statement.where(Application.status == application_status)
 
+    if job_id is not None:
+        statement = statement.where(Application.job_id == job_id)
+
     statement = statement.offset(offset).limit(limit)
     result = await db.execute(statement)
 
-    items = []
-    for application, job, company_name in result.all():
-        items.append(
-            ApplicationListItem(
-                id=application.id,
-                candidate_id=application.candidate_id,
-                job_id=application.job_id,
-                status=application.status,
-                application_url=application.application_url,
-                applied_at=application.applied_at,
-                follow_up_at=application.follow_up_at,
-                notes=application.notes,
-                submission_metadata=application.submission_metadata,
-                created_at=application.created_at,
-                updated_at=application.updated_at,
-                job_title=job.title,
-                company_name=company_name,
-                job_location=job.location,
-                job_url=job.job_url,
-                job_source=job.source,
-            )
-        )
+    return [
+        _application_list_item(application, job, company_name)
+        for application, job, company_name in result.all()
+    ]
 
-    return items
+
+def _application_list_item(
+    application: Application,
+    job: Job,
+    company_name: str | None,
+) -> ApplicationListItem:
+    return ApplicationListItem(
+        id=application.id,
+        candidate_id=application.candidate_id,
+        job_id=application.job_id,
+        status=application.status,
+        application_url=application.application_url,
+        applied_at=application.applied_at,
+        follow_up_at=application.follow_up_at,
+        notes=application.notes,
+        submission_metadata=application.submission_metadata,
+        created_at=application.created_at,
+        updated_at=application.updated_at,
+        job_title=job.title,
+        company_name=company_name,
+        job_location=job.location,
+        job_url=job.job_url,
+        job_source=job.source,
+    )
 
 
 @router.get("/candidate/{candidate_id}/summary")
 async def get_application_summary(
     candidate_id: UUID,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    candidate = await db.get(Candidate, candidate_id)
-
-    if candidate is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Candidate not found",
-        )
+    await get_owned_candidate(db, candidate_id, current_user)
 
     now = datetime.now(timezone.utc)
     today_start = datetime.combine(
@@ -250,8 +259,11 @@ def serialize_document(document: ApplicationDocument) -> dict:
 async def list_application_documents(
     application_id: UUID,
     candidate_id: UUID = Query(...),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    await get_owned_candidate(db, candidate_id, current_user)
+
     application = await db.scalar(
         select(Application).where(
             Application.id == application_id,
@@ -278,8 +290,11 @@ async def get_application_document(
     application_id: UUID,
     document_id: UUID,
     candidate_id: UUID = Query(...),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    await get_owned_candidate(db, candidate_id, current_user)
+
     application = await db.scalar(
         select(Application).where(
             Application.id == application_id,
@@ -308,8 +323,11 @@ async def approve_application_document(
     application_id: UUID,
     document_id: UUID,
     candidate_id: UUID = Query(...),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    await get_owned_candidate(db, candidate_id, current_user)
+
     application = await db.scalar(
         select(Application).where(
             Application.id == application_id,
@@ -345,13 +363,41 @@ async def approve_application_document(
     return serialize_document(document)
 
 
+@router.get("/{application_id}", response_model=ApplicationListItem)
+async def get_application(
+    application_id: UUID,
+    candidate_id: UUID = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await get_owned_candidate(db, candidate_id, current_user)
+
+    result = await db.execute(
+        select(Application, Job, Company.name)
+        .join(Job, Application.job_id == Job.id)
+        .outerjoin(Company, Job.company_id == Company.id)
+        .where(
+            Application.id == application_id,
+            Application.candidate_id == candidate_id,
+        )
+    )
+    row = result.first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Application not found")
+
+    return _application_list_item(*row)
+
+
 @router.patch("/{application_id}", response_model=ApplicationRead)
 async def update_application(
     application_id: UUID,
     payload: ApplicationUpdate,
     candidate_id: UUID = Query(...),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    await get_owned_candidate(db, candidate_id, current_user)
+
     application = await db.scalar(
         select(Application).where(
             Application.id == application_id,
@@ -390,8 +436,11 @@ async def update_application(
 async def delete_application(
     application_id: UUID,
     candidate_id: UUID = Query(...),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    await get_owned_candidate(db, candidate_id, current_user)
+
     application = await db.scalar(
         select(Application).where(
             Application.id == application_id,
@@ -418,11 +467,12 @@ async def delete_application(
 )
 async def generate_cover_letter(
     payload: CoverLetterRequest,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    candidate = await db.get(Candidate, payload.candidate_id)
-    if candidate is None:
-        raise HTTPException(status_code=404, detail="Candidate not found")
+    candidate = await get_owned_candidate(
+        db, payload.candidate_id, current_user
+    )
 
     job = await db.get(Job, payload.job_id)
     if job is None:
@@ -572,8 +622,11 @@ JOB DETAILS:
 @router.post("/tailor-resume")
 async def tailor_resume(
     payload: ResumeTailoringRequest,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    await get_owned_candidate(db, payload.candidate_id, current_user)
+
     try:
         result = await tailor_resume_for_job(
             db=db,

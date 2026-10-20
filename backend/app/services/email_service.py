@@ -39,7 +39,7 @@ async def send_email(
             password=settings.smtp_password,
             use_tls=settings.smtp_use_tls,
             start_tls=settings.smtp_start_tls,
-            validate_certs=False,
+            validate_certs=settings.validate_smtp_certs,
             timeout=30,
         )
         logger.info("Email sent successfully to %s", to_email)

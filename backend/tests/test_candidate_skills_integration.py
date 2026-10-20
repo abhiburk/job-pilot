@@ -17,13 +17,14 @@ from backend.app.schemas.candidate_skill import (
 
 
 @pytest.mark.asyncio
-async def test_candidate_skill_full_lifecycle(test_db):
+async def test_candidate_skill_full_lifecycle(test_db, test_user):
     candidate = Candidate(
         full_name="Skills Integration Test",
         email="skills-integration@example.com",
         headline="Python Developer",
         years_experience=4,
         salary_currency="INR",
+        user_id=test_user.id,
     )
     test_db.add(candidate)
     await test_db.commit()
@@ -40,6 +41,7 @@ async def test_candidate_skill_full_lifecycle(test_db):
             is_primary=True,
         ),
         test_db,
+        test_user,
     )
 
     assert created.name == "Python"
@@ -47,7 +49,7 @@ async def test_candidate_skill_full_lifecycle(test_db):
     assert created.is_primary is True
 
     # List the candidate's skills.
-    skills = await list_candidate_skills(candidate.id, test_db)
+    skills = await list_candidate_skills(candidate.id, test_db, test_user)
 
     assert len(skills) == 1
     assert skills[0].skill_id == created.skill_id
@@ -61,6 +63,7 @@ async def test_candidate_skill_full_lifecycle(test_db):
             years_experience=4,
         ),
         test_db,
+        test_user,
     )
 
     assert updated.proficiency == "Expert"
@@ -71,6 +74,7 @@ async def test_candidate_skill_full_lifecycle(test_db):
         candidate.id,
         created.id,
         test_db,
+        test_user,
     )
 
     assert response.status_code == 204
@@ -78,6 +82,7 @@ async def test_candidate_skill_full_lifecycle(test_db):
     skills_after_delete = await list_candidate_skills(
         candidate.id,
         test_db,
+        test_user,
     )
     assert skills_after_delete == []
 
@@ -89,11 +94,12 @@ async def test_candidate_skill_full_lifecycle(test_db):
 
 
 @pytest.mark.asyncio
-async def test_duplicate_candidate_skill_returns_conflict(test_db):
+async def test_duplicate_candidate_skill_returns_conflict(test_db, test_user):
     candidate = Candidate(
         full_name="Duplicate Skill Test",
         email="duplicate-skill@example.com",
         salary_currency="INR",
+        user_id=test_user.id,
     )
     test_db.add(candidate)
     await test_db.commit()
@@ -101,19 +107,19 @@ async def test_duplicate_candidate_skill_returns_conflict(test_db):
 
     payload = CandidateSkillCreate(name="Laravel")
 
-    await add_candidate_skill(candidate.id, payload, test_db)
+    await add_candidate_skill(candidate.id, payload, test_db, test_user)
 
     with pytest.raises(HTTPException) as exc_info:
-        await add_candidate_skill(candidate.id, payload, test_db)
+        await add_candidate_skill(candidate.id, payload, test_db, test_user)
 
     assert exc_info.value.status_code == 409
 
 
 @pytest.mark.asyncio
-async def test_missing_candidate_returns_404(test_db):
+async def test_missing_candidate_returns_404(test_db, test_user):
     from uuid import uuid4
 
     with pytest.raises(HTTPException) as exc_info:
-        await list_candidate_skills(uuid4(), test_db)
+        await list_candidate_skills(uuid4(), test_db, test_user)
 
     assert exc_info.value.status_code == 404
